@@ -7,6 +7,7 @@
 
 用法: python dafeiyu.py            正常启动
       python dafeiyu.py --smoke    自检启动，0.8 秒后自动退出
+      python dafeiyu.py --version  输出版本号
 键位: 拖动标题栏移动 / 双击标题栏折叠 / Esc 展开
 """
 
@@ -16,6 +17,8 @@ from datetime import datetime
 from pathlib import Path
 
 import tkinter as tk
+
+__version__ = "0.4.0"
 
 # 打包成 exe 后 __file__ 指向临时解压目录，配置与进度必须落在 exe 旁边
 APP_DIR = Path(sys.executable).parent if getattr(sys, "frozen", False) else Path(__file__).parent
@@ -234,6 +237,8 @@ class DaFeiYu:
                                   bd=0, activebackground=LINE, activeforeground=FG,
                                   font=(FONT, 11), cursor="hand2")
         self.fold_btn.pack(side="right", padx=2)
+        tk.Label(bar, text=f"v{__version__}", bg="#141618", fg="#4A5056",
+                 font=(FONT, 7)).pack(side="right", padx=(0, 4))
         bar.bind("<ButtonPress-1>", self._drag_start)
         bar.bind("<B1-Motion>", self._drag)
         bar.bind("<Double-Button-1>", lambda e: self._toggle())
@@ -412,6 +417,9 @@ def _enable_dpi_awareness():
 
 
 def main():
+    if "--version" in sys.argv:
+        print(f"DaFeiYu {__version__}")
+        return
     load_config()
     _enable_dpi_awareness()
     root = tk.Tk()
