@@ -1,0 +1,5 @@
+﻿数据快照 · 20261101-1030
+程序版本 v0.9.0
+
+恢复方法：把 tasks.json / dafeiyu_state.json / config.json
+三个文件覆盖回 DaFeiYu.exe 所在的同一个文件夹，重启程序即可。

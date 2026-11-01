@@ -23,7 +23,7 @@ from tkinter import ttk, filedialog
 import aiclient
 import clipimg
 
-__version__ = "0.9.0"
+__version__ = "0.9.1"
 
 # 打包成 exe 后 __file__ 指向临时解压目录，配置与进度必须落在 exe 旁边
 APP_DIR = Path(sys.executable).parent if getattr(sys, "frozen", False) else Path(__file__).parent
@@ -801,17 +801,15 @@ class DaFeiYu:
         row1.pack(fill="x", padx=16)
         tk.Label(row1, text="每天", bg=BG, fg=DIM, font=(FONT, 9), width=5,
                  anchor="w").pack(side="left")
-        mpd_entry = tk.Entry(row1, bg=CARD, fg=FG, insertbackground=FG, bd=0, font=(FONT, 9),
-                             highlightthickness=1, highlightbackground=LINE,
-                             highlightcolor=ACCENT, width=6)
-        mpd_entry.insert(0, str(MINUTES_PER_DAY))
+        mpd_var = tk.StringVar(value=str(MINUTES_PER_DAY))
+        mpd_entry = tk.Entry(row1, textvariable=mpd_var, bg=CARD, fg=FG, insertbackground=FG,
+                             bd=0, font=(FONT, 9), highlightthickness=1,
+                             highlightbackground=LINE, highlightcolor=ACCENT, width=6)
         mpd_entry.pack(side="left", ipady=4)
         tk.Label(row1, text="分钟", bg=BG, fg=MUTED, font=(FONT, 8)).pack(side="left", padx=(6, 10))
 
         def set_mpd(v):
-            mpd_entry.delete(0, "end")
-            mpd_entry.insert(0, str(v))
-            preview()
+            mpd_var.set(str(v))
 
         for v in (30, 45, 60, 90, 120):
             tk.Button(row1, text=str(v), command=lambda x=v: set_mpd(x), bg=CARD, fg=DIM,
@@ -824,10 +822,10 @@ class DaFeiYu:
         row2.pack(fill="x", padx=16, pady=(10, 0))
         tk.Label(row2, text="目标日", bg=BG, fg=DIM, font=(FONT, 9), width=5,
                  anchor="w").pack(side="left")
-        dl_entry = tk.Entry(row2, bg=CARD, fg=FG, insertbackground=FG, bd=0, font=(FONT, 9),
-                            highlightthickness=1, highlightbackground=LINE,
-                            highlightcolor=ACCENT, width=14)
-        dl_entry.insert(0, PLAN_DEADLINE or "")
+        dl_var = tk.StringVar(value=PLAN_DEADLINE or "")
+        dl_entry = tk.Entry(row2, textvariable=dl_var, bg=CARD, fg=FG, insertbackground=FG,
+                            bd=0, font=(FONT, 9), highlightthickness=1,
+                            highlightbackground=LINE, highlightcolor=ACCENT, width=14)
         dl_entry.pack(side="left", ipady=4)
         tk.Label(row2, text="格式 2027-05-22", bg=BG, fg=MUTED,
                  font=(FONT, 8)).pack(side="left", padx=(8, 0))
@@ -846,10 +844,10 @@ class DaFeiYu:
 
         def read_vals():
             try:
-                mpd = max(10, int(str(mpd_entry.get()).strip() or 0))
+                mpd = max(10, int(str(mpd_var.get()).strip() or 0))
             except ValueError:
                 mpd = 60
-            dl = str(dl_entry.get()).strip()
+            dl = str(dl_var.get()).strip()
             if dl:
                 try:
                     datetime.strptime(dl, "%Y-%m-%d")
@@ -911,8 +909,9 @@ class DaFeiYu:
                 LEAVE_DAYS.remove(d)
             refresh_leave()
 
-        mpd_entry.bind("<KeyRelease>", preview)
-        dl_entry.bind("<KeyRelease>", preview)
+        # 绑变量而不是按键：粘贴、自动填充也能触发预览
+        mpd_var.trace_add("write", lambda *_: preview())
+        dl_var.trace_add("write", lambda *_: preview())
         refresh_leave()
 
         status = tk.Label(parent, text="", bg=BG, fg=MUTED, font=(FONT, 8), anchor="w")
