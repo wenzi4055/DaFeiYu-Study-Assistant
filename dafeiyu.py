@@ -17,10 +17,14 @@ from pathlib import Path
 
 import tkinter as tk
 
-STATE_FILE = Path(__file__).with_name("dafeiyu_state.json")
+# 打包成 exe 后 __file__ 指向临时解压目录，配置与进度必须落在 exe 旁边
+APP_DIR = Path(sys.executable).parent if getattr(sys, "frozen", False) else Path(__file__).parent
+STATE_FILE = APP_DIR / "dafeiyu_state.json"
+TASKS_FILE = APP_DIR / "tasks.json"
 
+# 内置示例任务池（首次运行时写出 tasks.json，之后一切以 tasks.json 为准）
 # (id, 模块, 列表短名, 详情全名, 验收标准)
-TASKS = [
+DEFAULT_TASKS = [
     ("ds1", "数据结构", "数组与广义表", "数组与广义表 · 重建", [
         "地址公式 3 分钟内默写（一/二/三维），说明每层偏移怎么变",
         "同一 3×4 矩阵按行优先、按列优先双算地址，零误差",
@@ -86,8 +90,57 @@ TASKS = [
     ]),
 ]
 
-TOTAL = len(TASKS)
-TASK_BY_ID = {t[0]: t for t in TASKS}
+APP_TITLE = "大肥鱼监工器"
+NOTE = ""
+UNIT = "项大任务"
+TASKS = []
+TOTAL = 0
+TASK_BY_ID = {}
+
+
+def _default_config():
+    return {
+        "title": "大肥鱼监工器",
+        "note": "离散数学冻结不计数",
+        "unit": "项大任务",
+        "tasks": [{"id": i, "module": m, "short": s, "full": f, "criteria": list(c)}
+                  for i, m, s, f, c in DEFAULT_TASKS],
+    }
+
+
+def load_config():
+    """读同目录 tasks.json。缺失就写出内置示例；损坏就回退内置，不让程序起不来。"""
+    global APP_TITLE, NOTE, UNIT, TASKS, TOTAL, TASK_BY_ID
+    raw = None
+    if TASKS_FILE.exists():
+        try:
+            raw = json.loads(TASKS_FILE.read_text(encoding="utf-8"))
+        except Exception:
+            raw = None
+    if not isinstance(raw, dict) or not isinstance(raw.get("tasks"), list) or not raw["tasks"]:
+        raw = _default_config()
+        try:
+            TASKS_FILE.write_text(json.dumps(raw, ensure_ascii=False, indent=2), encoding="utf-8")
+        except Exception:
+            pass
+
+    APP_TITLE = raw.get("title") or "大肥鱼监工器"
+    NOTE = raw.get("note") or ""
+    UNIT = raw.get("unit") or "项大任务"
+    tasks = []
+    for n, t in enumerate(raw["tasks"], 1):
+        if not isinstance(t, dict):
+            continue
+        tid = str(t.get("id") or f"task{n}")
+        short = t.get("short") or t.get("full") or tid
+        tasks.append((tid, t.get("module") or "", short, t.get("full") or short,
+                      [str(c) for c in (t.get("criteria") or [])]))
+    if not tasks:                      # 全是不合法条目时仍给一份可用的
+        raw = _default_config()
+        tasks = [(i, m, s, f, list(c)) for i, m, s, f, c in DEFAULT_TASKS]
+    TASKS = tasks
+    TOTAL = len(TASKS)
+    TASK_BY_ID = {t[0]: t for t in TASKS}
 
 BG = "#1B1D1F"
 CARD = "#24272A"
@@ -160,7 +213,7 @@ class DaFeiYu:
         bar = tk.Frame(self.root, bg="#141618", height=32)
         bar.pack(fill="x")
         bar.pack_propagate(False)
-        tk.Label(bar, text="大肥鱼监工器", bg="#141618", fg=FG,
+        tk.Label(bar, text=APP_TITLE, bg="#141618", fg=FG,
                  font=(FONT, 10, "bold")).pack(side="left", padx=12)
         tk.Button(bar, text="✕", command=self.root.destroy, bg="#141618", fg=MUTED,
                   bd=0, activebackground="#8B3A3A", activeforeground="white",
@@ -207,8 +260,7 @@ class DaFeiYu:
                                    highlightthickness=0, padx=0, pady=0,
                                    selectbackground=CARD, spacing1=1, spacing3=3)
         self.detail_text.pack(fill="x", padx=10)
-        self.detail_text.bind("<MouseWheel>",
-                              lambda e: self.detail_text.yview_scroll(-1 * (e.delta // 120), "units"))
+        self.detail_text.bind("<MouseWheel>", self._detail_wheel)
 
         btns = tk.Frame(wrap, bg=CARD)
         btns.pack(fill="x", padx=8, pady=6)
@@ -221,11 +273,20 @@ class DaFeiYu:
                       font=(FONT, 9, "bold"), cursor="hand2", width=8).pack(side="left", padx=3)
 
     def _build_list(self):
-        self.listbox = tk.Frame(self.body, bg=BG)
-        self.listbox.pack(fill="both", expand=True, padx=10)
+        shell = tk.Frame(self.body, bg=BG)
+        shell.pack(fill="both", expand=True, padx=10)
+        self.listbox = tk.Canvas(shell, bg=BG, highlightthickness=0)
+        self.listbox.pack(fill="both", expand=True)
+        inner = tk.Frame(self.listbox, bg=BG)
+        self._inner = self.listbox.create_window((0, 0), window=inner, anchor="nw")
+        inner.bind("<Configure>",
+                   lambda e: self.listbox.configure(scrollregion=self.listbox.bbox("all")))
+        self.listbox.bind("<Configure>",
+                          lambda e: self.listbox.itemconfigure(self._inner, width=e.width))
+
         self.rows = {}
         for tid, mod, short, _, _ in TASKS:
-            row = tk.Frame(self.listbox, bg=CARD, cursor="hand2")
+            row = tk.Frame(inner, bg=CARD, cursor="hand2")
             row.pack(fill="x", pady=1)
             dot = tk.Label(row, text="○", bg=CARD, fg=MUTED, font=(FONT, 8))
             dot.pack(side="left", padx=(8, 6), pady=2)
@@ -235,8 +296,24 @@ class DaFeiYu:
             tag.pack(side="right", padx=8)
             for w in (row, dot, name, tag):
                 w.bind("<Button-1>", lambda e, t=tid: self._select(t))
+                w.bind("<MouseWheel>", self._wheel)
                 w.configure(cursor="hand2")
             self.rows[tid] = (row, dot, name, tag)
+
+    # ---------- 滚轮 ----------
+    def _wheel(self, e):
+        first, last = (float(v) for v in self.listbox.yview())
+        if first <= 0.0 and last >= 1.0:      # 内容没超出可视区，滚动无意义
+            return
+        self.listbox.yview_scroll(-1 * (e.delta // 120), "units")
+        return "break"
+
+    def _detail_wheel(self, e):
+        first, last = (float(v) for v in self.detail_text.yview())
+        if first <= 0.0 and last >= 1.0:
+            return
+        self.detail_text.yview_scroll(-1 * (e.delta // 120), "units")
+        return "break"
 
     # ---------- 交互 ----------
     def _toggle(self):
@@ -273,13 +350,13 @@ class DaFeiYu:
     def _draw_bar(self):
         done = sum(1 for v in self.state.values() if v["state"] == "done")
         w = max(self.bar.winfo_width(), 1)
-        self.bar.coords(self.bar_fill, 0, 0, w * done / TOTAL, 5)
+        self.bar.coords(self.bar_fill, 0, 0, w * done / max(TOTAL, 1), 5)
 
     def _refresh(self):
         done = sum(1 for v in self.state.values() if v["state"] == "done")
-        self.pct.config(text=f"{done * 100 // TOTAL}%")
-        self.left_label.config(text=f"还剩 {TOTAL - done} 项大任务没做完")
-        self.sub_label.config(text=f"已过关 {done} / {TOTAL}  ·  离散数学冻结不计数")
+        self.pct.config(text=f"{done * 100 // max(TOTAL, 1)}%")
+        self.left_label.config(text=f"还剩 {TOTAL - done} {UNIT}没做完")
+        self.sub_label.config(text=f"已过关 {done} / {TOTAL}" + (f"  ·  {NOTE}" if NOTE else ""))
         self._draw_bar()
 
         for tid, _, short, _, _ in TASKS:
@@ -297,12 +374,32 @@ class DaFeiYu:
         self.detail_title.config(text=full)
         self.detail_text.config(state="normal")
         self.detail_text.delete("1.0", "end")
-        self.detail_text.insert("end", "\n".join(f"{i}. {c}" for i, c in enumerate(crit, 1)))
+        self.detail_text.insert("end", "\n".join(f"{i}. {c}" for i, c in enumerate(crit, 1))
+                                or "（该项没写验收标准，补一条可当场判真假的句子）")
         self.detail_text.config(state="disabled")
         self.detail_text.yview_moveto(0)
 
 
+def _enable_dpi_awareness():
+    """Windows 高 DPI 下不声明感知，Tk 窗口会被系统位图拉伸，字是糊的。"""
+    if sys.platform != "win32":
+        return
+    try:
+        import ctypes
+    except Exception:
+        return
+    try:
+        ctypes.windll.shcore.SetProcessDpiAwareness(1)   # system DPI aware
+    except Exception:
+        try:
+            ctypes.windll.user32.SetProcessDPIAware()
+        except Exception:
+            pass
+
+
 def main():
+    load_config()
+    _enable_dpi_awareness()
     root = tk.Tk()
     app = DaFeiYu(root)
     app._refresh()

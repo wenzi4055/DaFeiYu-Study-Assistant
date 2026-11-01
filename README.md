@@ -16,7 +16,7 @@
 
 做考证监工的第一需求是**挡住你**。Chrome 插件活在浏览器标签页里，而你摸鱼的时候根本不在浏览器，你在微信、在游戏、在 B 站客户端。扩展程序的悬浮窗只能在页面里浮动，它压不住任何一个原生窗口。
 
-所以这里选了最原始也最有效的方案：**Tkinter 无边框置顶窗**。它只有 275 行、零第三方依赖、不用打包、不用装运行时、改一行就能跑。Windows 自带 Python 就能起，macOS 和 Linux 同理。
+所以这里选了最原始也最有效的方案：**Tkinter 无边框置顶窗**。它只有 360 行、零第三方依赖、不用打包、不用装运行时、改一个 JSON 就能换监督对象。Windows 自带 Python 就能起，macOS 和 Linux 同理。
 
 真要做成插件，把它嵌进手机、再顺手推送提醒，那是另一个产品。先把这一项做完。
 
@@ -44,6 +44,12 @@
 
 ## 快速开始
 
+**方式一：下载 exe（不用装 Python）**
+
+从 [Releases](https://github.com/<YOUR_NAME>/DaFeiYu-Study-Assistant/releases) 拿 `DaFeiYu.exe`（约 9 MB，单文件），丢到任意文件夹双击即可。首次运行会在 exe 旁边自动生成 `tasks.json` 和 `dafeiyu_state.json`。
+
+**方式二：跑源码**
+
 需要 Python 3.8+（Windows 装 Python 时勾选 tcl/tk，默认就带）。
 
 ```bash
@@ -54,20 +60,42 @@ python dafeiyu.py
 
 也可以直接双击 `dafeiyu.py`。
 
+**方式三：自己打包**
+
+```powershell
+.\build.ps1        # 产物 dist\DaFeiYu.exe
+```
+
 - 拖标题栏移动，双击标题栏折叠成一条 32px 的进度带
 - 点任意任务看它的**全部硬性验收标准**（在下方滚动可翻）
 - `✔ 过关` / `◐ 在途` / `↺ 打回` 三键切换
 - `Esc` 展开
+- 任务多到装不下时，列表区支持鼠标滚轮
 
 ## 改成你自己的任务池
 
-打开 `dafeiyu.py`，改顶部的 `TASKS` 列表，格式是：
+**不用改代码。** 程序旁边的 `tasks.json` 就是任务池，改它就行：
 
-```python
-(id, 模块, 列表短名, 详情全名, [验收标准, ...])
+```json
+{
+  "title": "监督器标题",
+  "note": "进度下方的一句补充",
+  "unit": "项大任务",
+  "tasks": [
+    { "id": "ds1", "module": "数据结构", "short": "数组与广义表",
+      "full": "数组与广义表 · 重建",
+      "criteria": ["验收标准一", "验收标准二"] }
+  ]
+}
 ```
 
-`TOTAL` 和进度分母会自动跟着变，不用改别的。桌面上的 `dafeiyu_state.json` 只按 id 记状态，改任务池不会丢进度（匹配不上的旧 id 由新定义覆盖）。
+- 只认 `tasks` 数组，**几项都行**：进度分母自动等于任务数，3 项、30 项都能跑
+- 字段全部可选：缺 `short` 回退 `full`，缺 `criteria` 会在详情区提示你补
+- 换监督对象不需要改代码：把 `title` 改成「健身监督器」、`unit` 改成「项训练」，就是另一个监工
+- `tasks.json` 损坏或缺失时会自动回退内置的示例任务池，程序不会起不来
+- 文件模板见 [`tasks.template.json`](tasks.template.json)，三科完整示例见 [`tasks.example.json`](tasks.example.json)
+
+桌面上的 `dafeiyu_state.json` 只按 id 记状态，改任务池不会丢进度（匹配不上的旧 id 由新定义覆盖）。
 
 **写验收标准的原则：可当场判定真假。** 「掌握二叉树遍历」是废话，「由两种遍历序列还原唯一二叉树，10 题全对」才能判。题库从哪来是你的事，程序只认结果。
 
@@ -79,6 +107,39 @@ python dafeiyu.py
 - [答案与判分细则](exams/数据结构-DS1-数组与广义表-答案与判分细则.md) —— 逐题得分点、常见错法、糊弄识别清单
 
 关键在第二份文件：**没有判分细则的卷子只是练习，不是验收。** 得分点要写到"漏了哪一步扣几分"，否则 90 分这条线就是自己骗自己。
+
+## 通用监督模板（人格版）
+
+程序是壳，`tasks.json` 是任务，[`prompts/supervisor-template.md`](prompts/supervisor-template.md) 是**人格**。三者可以分开用：
+
+- 只想要个不会哄你的监督人格 → 填空后粘进任意 LLM
+- 想换监督对象（健身、毕设、写作进度）→ 改 `tasks.json` 的 `title` / `unit` / `criteria`
+- 想要常驻桌面的记账窗 → 用这个程序
+
+模板里有填空区、三态规则、防糊弄清单，以及「我还在学习阶段」这类拖延该怎么处理（答案：给 48 小时时间盒，到期自动进考场，不许顺延）。
+
+## 文件结构
+
+```
+dafeiyu.py                   主程序，单文件
+build.ps1                    一键打包 exe
+tasks.json                   你的任务池（首次运行自动生成，不进版本库）
+tasks.template.json          任务池骨架
+tasks.example.json           三科完整示例
+dafeiyu_state.json           你的进度账本（不进版本库）
+exams/                       配套试卷与判分细则（示例）
+prompts/
+  supervisor-template.md     通用监督人格模板
+  dafeiyu-system-prompt.md   三科专用提示词
+tests/test_generic.py        通用性回归测试（任意任务池都能驱动窗口）
+docs/preview.png             截图
+```
+
+跑测试：
+
+```bash
+python tests/test_generic.py
+```
 
 ## 进度数据
 

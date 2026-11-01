@@ -1,6 +1,12 @@
-# 本地进度账本，属于个人数据
+# 本地进度账本与个人任务池，属于个人数据
 dafeiyu_state.json
 dafeiyu_state.json.bak
+tasks.json
+
+# 打包产物
+dist/
+build/
+*.spec
 
 # Python
 __pycache__/
