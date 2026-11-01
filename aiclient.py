@@ -127,12 +127,40 @@ def is_ready(cfg):
                 and (cfg.get("model") or "").strip())
 
 
-def build_messages(cfg, task_full, criteria, report):
+VISION_HINTS = ("vl", "vision", "4o", "glm-4v", "gemini", "omni", "gpt-4.1", "gpt-5")
+
+
+def supports_vision(model):
+    """粗略判断模型能不能读图。判错也只是白试一次，不影响记账。"""
+    m = (model or "").lower()
+    return any(k in m for k in VISION_HINTS)
+
+
+def build_messages(cfg, task_full, criteria, report, attachments=None, sessions=None):
+    """attachments: [{"b64": "...", "mime": "image/png"}]，sessions: 最近学习记录文本列表。"""
     system = (cfg.get("system_prompt") or "").strip() or DEFAULT_SYSTEM
     crit = "\n".join(f"{i}. {c}" for i, c in enumerate(criteria, 1)) or "（该项未设验收标准）"
-    user = (f"【任务】{task_full}\n\n【验收标准】\n{crit}\n\n"
-            f"【我的汇报】\n{report.strip()}\n\n按四行格式输出判定。")
-    return [{"role": "system", "content": system}, {"role": "user", "content": user}]
+    parts = [f"【任务】{task_full}", "", "【验收标准】", crit]
+    if sessions:
+        parts += ["", "【我的学习记录（程序记录，可能造假，仅供参考）】"]
+        parts += [f"- {s}" for s in sessions]
+    parts += ["", "【我的汇报】", report.strip() or "（没写文字，看附件）"]
+    if attachments:
+        parts += ["", f"【附件】共 {len(attachments)} 张图片，手写推导或截图。"
+                      "请按验收标准逐条核对图里的推导过程，指出具体哪一步错。"]
+    parts += ["", "按四行格式输出判定。"]
+    text = "\n".join(parts)
+
+    if attachments:
+        content = [{"type": "text", "text": text}]
+        for a in attachments:
+            content.append({"type": "image_url",
+                            "image_url": {"url": f"data:{a.get('mime', 'image/png')};base64,{a['b64']}"}})
+        user_content = content
+    else:
+        user_content = text
+    return [{"role": "system", "content": system},
+            {"role": "user", "content": user_content}]
 
 
 def _opener(cfg):
@@ -143,17 +171,21 @@ def _opener(cfg):
     return urllib.request.build_opener()
 
 
-def review(cfg, task_full, criteria, report):
+def review(cfg, task_full, criteria, report, attachments=None, sessions=None):
     """调用模型批改。成功返回文本，失败抛 AIError（消息可直接展示）。"""
     if not is_ready(cfg):
         raise AIError("还没配置 API Key。点「API 设置」填一个，或看 API_SETUP.md 的引导。")
+    if attachments and not supports_vision(cfg.get("model")):
+        raise AIError(f"当前模型 {cfg.get('model')} 看不了图片。\n"
+                      "换成支持视觉的模型：qwen-vl-max / glm-4v-flash / gpt-4o-mini。\n"
+                      "或者把推导打字贴进来。")
     base = (cfg.get("base_url") or "").rstrip("/")
     url = base + "/chat/completions"
     payload = {
         "model": cfg.get("model"),
-        "messages": build_messages(cfg, task_full, criteria, report),
+        "messages": build_messages(cfg, task_full, criteria, report, attachments, sessions),
         "temperature": 0.2,
-        "max_tokens": 800,
+        "max_tokens": 1200,
     }
     data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
     req = urllib.request.Request(url, data=data, method="POST", headers={
@@ -184,6 +216,31 @@ def review(cfg, task_full, criteria, report):
         return obj["choices"][0]["message"]["content"].strip()
     except Exception as e:
         raise AIError(f"返回格式看不懂：{body[:300]}") from e
+
+
+IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp"}
+TEXT_EXTS = {".txt", ".md", ".py", ".c", ".cpp", ".h", ".java", ".cs", ".json", ".log", ".csv"}
+MAX_IMAGE_BYTES = 6 * 1024 * 1024      # base64 膨胀约 1.33 倍，别撑爆请求
+
+
+def read_attachment(path):
+    """读一个附件。图片返回 ("image", {"b64","mime"})，文本返回 ("text", 内容)。"""
+    p = Path(path)
+    ext = p.suffix.lower()
+    if ext in IMAGE_EXTS:
+        size = p.stat().st_size
+        if size > MAX_IMAGE_BYTES:
+            raise AIError(f"{p.name} 有点大（{size/1024/1024:.1f} MB），先压到 6 MB 以内。")
+        import base64
+        mime = "image/jpeg" if ext in (".jpg", ".jpeg") else f"image/{ext.lstrip('.')}"
+        return "image", {"b64": base64.b64encode(p.read_bytes()).decode("ascii"),
+                         "mime": mime, "name": p.name}
+    if ext in TEXT_EXTS or ext == "":
+        try:
+            return "text", p.read_text(encoding="utf-8", errors="replace")[:20000]
+        except Exception as e:
+            raise AIError(f"读不了 {p.name}：{e}") from e
+    raise AIError(f"不支持的文件类型 {ext}。目前能收图片和文本类文件。")
 
 
 def test_connection(cfg):
