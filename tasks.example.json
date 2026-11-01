@@ -2,6 +2,10 @@
   "title": "大肥鱼监工器",
   "note": "离散数学冻结不计数",
   "unit": "项大任务",
+  "plan": {
+    "start": "2026-11-01",
+    "minutes_per_day": 90
+  },
   "tasks": [
     {
       "id": "ds1",
