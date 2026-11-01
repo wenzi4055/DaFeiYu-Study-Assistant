@@ -19,7 +19,7 @@ from pathlib import Path
 import tkinter as tk
 
 
-__version__ = "1.0.0"
+__version__ = "1.1.0"
 
 # 打包成 exe 后 __file__ 指向临时解压目录，配置与进度必须落在 exe 旁边
 APP_DIR = Path(sys.executable).parent if getattr(sys, "frozen", False) else Path(__file__).parent
@@ -607,6 +607,41 @@ class DaFeiYu:
         except Exception:
             pass
 
+    # ---------- 语音输入 ----------
+    def _listen_once(self, on_text):
+        """调 Windows 自带离线引擎识别一句。on_text 收到文本，空串表示没听清。"""
+        if sys.platform != "win32":
+            on_text("")
+            return
+        ps = (
+            "[Console]::OutputEncoding=[System.Text.Encoding]::UTF8;"
+            "Add-Type -AssemblyName System.Speech;"
+            "$r=New-Object System.Speech.Recognition.SpeechRecognitionEngine;"
+            "$r.SetInputToDefaultAudioDevice();"
+            "$r.LoadGrammar((New-Object System.Speech.Recognition.DictationGrammar));"
+            "$r.InitialSilenceTimeout=[TimeSpan]::FromSeconds(6);"
+            "$r.EndSilenceTimeout=[TimeSpan]::FromSeconds(1.5);"
+            "$res=$r.Recognize();"
+            "if($res){[Console]::Out.Write($res.Text)}"
+        )
+
+        def worker():
+            import subprocess
+            import threading as _th
+            txt = ""
+            try:
+                out = subprocess.run(
+                    ["powershell", "-NoProfile", "-STA", "-Command", ps],
+                    capture_output=True, timeout=40,
+                    creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+                txt = (out.stdout or b"").decode("utf-8", "replace").strip()
+            except Exception:
+                txt = ""
+            self.root.after(0, lambda t=txt: on_text(t))
+
+        import threading
+        threading.Thread(target=worker, daemon=True).start()
+
     # ---------- 计时与学习记录 ----------
     def _toggle_timer(self):
         if self.timer_start is None:
@@ -669,12 +704,36 @@ class DaFeiYu:
         mins.pack(side="left", ipady=4)
         tk.Label(line, text="分钟", bg=BG, fg=MUTED, font=(FONT, 8)).pack(side="left", padx=(6, 0))
 
-        tk.Label(parent, text="这次学到哪 / 卡在哪（写清楚，AI 批改会读它）", bg=BG, fg=MUTED,
-                 font=(FONT, 8)).pack(anchor="w", padx=16, pady=(12, 4))
+        lab_row = tk.Frame(parent, bg=BG)
+        lab_row.pack(fill="x", padx=16, pady=(12, 4))
+        tk.Label(lab_row, text="这次学到哪 / 卡在哪", bg=BG, fg=MUTED,
+                 font=(FONT, 8)).pack(side="left")
         note = tk.Text(parent, height=7, bg=CARD, fg=FG, insertbackground=FG, bd=0,
                        font=(FONT, 9), wrap="word", padx=10, pady=8, highlightthickness=0)
         note.pack(fill="x", padx=16)
         note.focus_set()
+
+        def start_speech():
+            speak_btn.config(state="disabled", text="听…")
+            status.config(text="正在听，说完停顿一下自动结束（首次会要麦克风权限）", fg=DOING)
+
+            def got(txt):
+                speak_btn.config(state="normal", text="语音输入")
+                if not txt:
+                    status.config(text="没听清。靠近麦克风再说一次，或按 Win+H", fg="#E57373")
+                    return
+                cur = note.get("1.0", "end").strip()
+                note.insert("end", ("\n" if cur else "") + txt)
+                note.see("end")
+                status.config(text=f"听写：{txt[:46]}", fg=OK)
+
+            self._listen_once(got)
+
+        speak_btn = tk.Button(lab_row, text="语音输入", command=start_speech, bg=CARD,
+                              fg="#BA9BF2", bd=1, relief="flat", highlightbackground=LINE,
+                              activebackground="#BA9BF2", activeforeground="#111",
+                              font=(FONT, 8, "bold"), cursor="hand2", width=9)
+        speak_btn.pack(side="right")
 
         status = tk.Label(parent, text="", bg=BG, fg=MUTED, font=(FONT, 8), anchor="w")
         status.pack(fill="x", padx=16, pady=(8, 0))
