@@ -12,6 +12,7 @@
 """
 
 import json
+import os
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -19,7 +20,7 @@ from pathlib import Path
 import tkinter as tk
 
 
-__version__ = "1.1.0"
+__version__ = "1.1.1"
 
 # 打包成 exe 后 __file__ 指向临时解压目录，配置与进度必须落在 exe 旁边
 APP_DIR = Path(sys.executable).parent if getattr(sys, "frozen", False) else Path(__file__).parent
@@ -220,10 +221,13 @@ class DaFeiYu:
     def __init__(self, root):
         self.root = root
         self.sessions = []
+        self.timer = None          # 落盘用：{"task":..., "start":...}
         self.timer_start = None
         self.timer_task = None
         self.timer_job = None
+        self.load_error = ""
         self.state = self._load()
+        self._restore_timer()
         self.collapsed = False
         self.selected = self._first_open()
 
@@ -245,24 +249,83 @@ class DaFeiYu:
 
     def _after_show(self):
         self._enable_taskbar()
+        if self.load_error:
+            self.today_label.config(text="⚠ " + self.load_error, fg="#E57373")
+        if self.timer_start is not None:
+            self.timer_btn.config(fg=OK)
+            self._tick()
+            self.selected = self.timer_task or self.selected
 
     # ---------- 持久化 ----------
+    def _empty_state(self):
+        return {tid: {"state": "todo", "ts": ""} for tid, *_ in TASKS}
+
     def _load(self):
+        """读账本。文件坏了先备份再回退，绝不静默丢掉用户的进度。"""
+        self.sessions = []
+        if not STATE_FILE.exists():
+            return self._empty_state()
         try:
             raw = json.loads(STATE_FILE.read_text(encoding="utf-8"))
-        except Exception:
-            raw = {}
-        if not isinstance(raw, dict):
-            raw = {}
-        data = raw.get("tasks", {}) or {}
-        self.sessions = [s for s in (raw.get("sessions") or []) if isinstance(s, dict)]
-        return {tid: data.get(tid, {"state": "todo", "ts": ""}) for tid, *_ in TASKS}
+            if not isinstance(raw, dict):
+                raise ValueError("账本根节点不是对象")
+        except Exception as e:
+            stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+            backup = STATE_FILE.with_name(f"{STATE_FILE.name}.broken-{stamp}")
+            try:
+                STATE_FILE.replace(backup)
+                self.load_error = f"账本读不了，已备份为 {backup.name}，进度从零开始"
+            except Exception:
+                self.load_error = f"账本读不了且备份失败：{e}"
+            return self._empty_state()
+
+        data = raw.get("tasks")
+        if not isinstance(data, dict):
+            data = {}
+        self.sessions = [x for x in (raw.get("sessions") or []) if isinstance(x, dict)]
+        t = raw.get("timer")
+        self.timer = t if isinstance(t, dict) and t.get("start") else None
+        state = {}
+        for tid, *_ in TASKS:
+            rec = data.get(tid)
+            if isinstance(rec, dict) and rec.get("state") in ("todo", "doing", "done"):
+                state[tid] = {"state": rec["state"], "ts": rec.get("ts") or ""}
+            else:
+                state[tid] = {"state": "todo", "ts": ""}
+        return state
 
     def _save(self):
-        STATE_FILE.write_text(json.dumps(
-            {"updated": datetime.now().strftime("%Y-%m-%d %H:%M"),
-             "tasks": self.state, "sessions": self.sessions},
-            ensure_ascii=False, indent=2), encoding="utf-8")
+        """原子写：先写 .tmp 再 os.replace，写一半断电也不会毁掉账本。"""
+        payload = json.dumps({
+            "updated": datetime.now().strftime("%Y-%m-%d %H:%M"),
+            "tasks": self.state,
+            "sessions": self.sessions,
+            "timer": self.timer,
+        }, ensure_ascii=False, indent=2)
+        tmp = STATE_FILE.with_suffix(".tmp")
+        try:
+            tmp.write_text(payload, encoding="utf-8")
+            os.replace(tmp, STATE_FILE)
+        except Exception:
+            try:
+                STATE_FILE.write_text(payload, encoding="utf-8")
+            except Exception:
+                pass
+
+    def _restore_timer(self):
+        """上次没结束的计时，12 小时内自动续上。"""
+        if not self.timer:
+            return
+        try:
+            st = datetime.fromisoformat(self.timer["start"])
+        except Exception:
+            self.timer = None
+            return
+        if (datetime.now() - st).total_seconds() > 12 * 3600:
+            self.timer = None
+            return
+        self.timer_start = st
+        self.timer_task = self.timer.get("task")
 
     def _spent_minutes(self, tid):
         return sum(int(s.get("minutes") or 0) for s in self.sessions if s.get("task") == tid)
@@ -647,6 +710,9 @@ class DaFeiYu:
         if self.timer_start is None:
             self.timer_start = datetime.now()
             self.timer_task = self.selected
+            self.timer = {"task": self.timer_task,
+                          "start": self.timer_start.isoformat(timespec="seconds")}
+            self._save()          # 立刻落盘：关窗/断电也不丢这段计时
             self.timer_btn.config(fg=OK)
             self._tick()
         else:
@@ -671,6 +737,7 @@ class DaFeiYu:
     def _cancel_timer(self):
         self.timer_start = None
         self.timer_task = None
+        self.timer = None
         self._stop_tick()
         try:
             self.timer_btn.config(text="▶ 计时", fg="#BA9BF2")
@@ -761,8 +828,8 @@ class DaFeiYu:
                 "minutes": m,
                 "note": text,
             })
+            self._cancel_timer()   # 先清计时，再落盘
             self._save()
-            self._cancel_timer()
             self._close_panel()
             self._refresh()
 
