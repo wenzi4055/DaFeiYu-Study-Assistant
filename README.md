@@ -46,14 +46,14 @@
 
 **方式一：下载 exe（不用装 Python）**
 
-从 [Releases](https://github.com/<YOUR_NAME>/DaFeiYu-Study-Assistant/releases) 拿 `DaFeiYu.exe`（约 9 MB，单文件），丢到任意文件夹双击即可。首次运行会在 exe 旁边自动生成 `tasks.json` 和 `dafeiyu_state.json`。
+从 [Releases](https://github.com/wenzi4055/DaFeiYu-Study-Assistant/releases) 拿 `DaFeiYu.exe`（约 9 MB，单文件），丢到任意文件夹双击即可。首次运行会在 exe 旁边自动生成 `tasks.json` 和 `dafeiyu_state.json`。
 
 **方式二：跑源码**
 
 需要 Python 3.8+（Windows 装 Python 时勾选 tcl/tk，默认就带）。
 
 ```bash
-git clone https://github.com/<YOUR_NAME>/DaFeiYu-Study-Assistant.git
+git clone https://github.com/wenzi4055/DaFeiYu-Study-Assistant.git
 cd DaFeiYu-Study-Assistant
 python dafeiyu.py
 ```
