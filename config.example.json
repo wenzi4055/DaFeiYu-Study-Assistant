@@ -1,0 +1,9 @@
+{
+  "provider": "deepseek",
+  "base_url": "https://api.deepseek.com/v1",
+  "model": "deepseek-chat",
+  "api_key": "sk-把你的Key粘到这里",
+  "timeout": 90,
+  "proxy": "",
+  "system_prompt": ""
+}

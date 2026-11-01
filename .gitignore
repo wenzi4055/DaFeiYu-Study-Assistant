@@ -3,6 +3,9 @@ dafeiyu_state.json
 dafeiyu_state.json.bak
 tasks.json
 
+# API Key 配置，绝不进版本库
+config.json
+
 # 打包产物
 dist/
 build/
