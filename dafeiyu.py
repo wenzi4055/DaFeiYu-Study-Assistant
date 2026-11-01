@@ -23,7 +23,7 @@ from tkinter import ttk, filedialog
 import aiclient
 import clipimg
 
-__version__ = "0.7.1"
+__version__ = "0.8.0"
 
 # 打包成 exe 后 __file__ 指向临时解压目录，配置与进度必须落在 exe 旁边
 APP_DIR = Path(sys.executable).parent if getattr(sys, "frozen", False) else Path(__file__).parent
@@ -107,6 +107,10 @@ UNIT = "项大任务"
 TASKS = []
 TOTAL = 0
 TASK_BY_ID = {}
+PLAN_START = ""
+PLAN_DEADLINE = ""
+MINUTES_PER_DAY = 60
+LEAVE_DAYS = []
 
 # 每项预计投入小时数（学 + 练 + 测）。依据：内容量 × 视频倍速 × 练习系数。
 # 改了 tasks.json 却没写 hours 时，按 id 查这张表兜底。
@@ -121,6 +125,8 @@ def _default_config():
         "title": "大肥鱼监工器",
         "note": "离散数学冻结不计数",
         "unit": "项大任务",
+        "plan": {"start": datetime.now().strftime("%Y-%m-%d"),
+                 "deadline": "", "minutes_per_day": 60, "leave_days": []},
         "tasks": [{"id": i, "module": m, "short": s, "full": f,
                    "criteria": list(c), "hours": HOURS.get(i, 0)}
                   for i, m, s, f, c in DEFAULT_TASKS],
@@ -130,6 +136,7 @@ def _default_config():
 def load_config():
     """读同目录 tasks.json。缺失就写出内置示例；损坏就回退内置，不让程序起不来。"""
     global APP_TITLE, NOTE, UNIT, TASKS, TOTAL, TASK_BY_ID
+    global PLAN_START, PLAN_DEADLINE, MINUTES_PER_DAY, LEAVE_DAYS
     raw = None
     if TASKS_FILE.exists():
         try:
@@ -146,6 +153,14 @@ def load_config():
     APP_TITLE = raw.get("title") or "大肥鱼监工器"
     NOTE = raw.get("note") or ""
     UNIT = raw.get("unit") or "项大任务"
+    plan = raw.get("plan") if isinstance(raw.get("plan"), dict) else {}
+    PLAN_START = plan.get("start") or datetime.now().strftime("%Y-%m-%d")
+    PLAN_DEADLINE = plan.get("deadline") or ""
+    LEAVE_DAYS = [str(d) for d in (plan.get("leave_days") or []) if d]
+    try:
+        MINUTES_PER_DAY = max(10, int(plan.get("minutes_per_day") or 60))
+    except (TypeError, ValueError):
+        MINUTES_PER_DAY = 60
     tasks = []
     for n, t in enumerate(raw["tasks"], 1):
         if not isinstance(t, dict):
@@ -178,7 +193,7 @@ DOING = "#FFB74D"
 FONT = "微软雅黑"
 
 W = 420
-H_MAX = 680
+H_MAX = 720
 ALPHA = 1.0   # 想要玻璃感就改 0.92，代价是底下窗口内容会透上来
 
 
@@ -210,6 +225,9 @@ class DaFeiYu:
 
         root.bind("<Escape>", lambda e: self._expand())
 
+    def _after_show(self):
+        self._enable_taskbar()
+
     # ---------- 持久化 ----------
     def _load(self):
         try:
@@ -236,6 +254,98 @@ class DaFeiYu:
         return [f"{(s.get('end') or '')[:16]} 学了 {s.get('minutes')} 分钟：{s.get('note') or ''}"[:120]
                 for s in rows]
 
+    # ---------- 日历排期 ----------
+    def _plan(self):
+        """按日历切分：总工时 ÷ 每天配额 = 总天数，今天该做哪一块。
+
+        返回 (day_no, total_days, task, quota_end, spent_all)：
+        day_no 是今天第几天（1 起），task 是今天该做的任务元组。
+        """
+        try:
+            start = datetime.strptime(PLAN_START, "%Y-%m-%d").date()
+        except Exception:
+            start = datetime.now().date()
+        mpd = max(10, int(MINUTES_PER_DAY or 60))
+        total_min = sum(h * 60 for *_, h in TASKS if h)
+        if total_min <= 0:
+            return 1, 1, (TASKS[0] if TASKS else None), mpd, 0
+        total_days = max(1, -(-int(total_min) // mpd))       # 向上取整
+        day_no = (datetime.now().date() - start).days + 1
+        if day_no < 1:
+            day_no = 1
+        quota_min = day_no * mpd
+        spent = sum(int(s.get("minutes") or 0) for s in self.sessions)
+
+        # 定位今天配额落在哪一项
+        acc = 0
+        pick = TASKS[0] if TASKS else None
+        for t in TASKS:
+            h = t[5]
+            if not h:
+                continue
+            tmin = h * 60
+            if acc + tmin > quota_min - mpd:
+                pick = t
+                break
+            acc += tmin
+        return day_no, total_days, pick, quota_min, spent
+
+    def _gap(self):
+        """剩余工时 vs 目标完成日之间的差距：每天还差多少分钟。"""
+        today = datetime.now().date()
+        remain_min = sum(t[5] * 60 for t in TASKS if t[5]
+                         and self.state.get(t[0], {}).get("state") != "done")
+        if not PLAN_DEADLINE:
+            return {"no_deadline": True, "remain_min": remain_min}
+        try:
+            deadline = datetime.strptime(PLAN_DEADLINE, "%Y-%m-%d").date()
+        except Exception:
+            return {"no_deadline": True, "remain_min": remain_min}
+        total_days = (deadline - today).days + 1
+        leave_left = 0
+        for d in LEAVE_DAYS:
+            try:
+                if today <= datetime.strptime(d, "%Y-%m-%d").date() <= deadline:
+                    leave_left += 1
+            except Exception:
+                pass
+        work_days = max(1, total_days - leave_left)
+        return {
+            "no_deadline": False,
+            "remain_min": remain_min,
+            "days_left": total_days,
+            "leave_left": leave_left,
+            "work_days": work_days,
+            "need_per_day": remain_min / work_days,
+            "over": total_days <= 0,
+        }
+
+    def _gap_text(self):
+        g = self._gap()
+        if g.get("no_deadline"):
+            return "没设目标日 · 点这里设"
+        if g.get("over"):
+            return f"目标日已过 · 还剩 {g['remain_min']/60:.0f}h"
+        need = g["need_per_day"]
+        dl = PLAN_DEADLINE[5:].replace("-", "/")      # 07-22 -> 07/22
+        if need <= MINUTES_PER_DAY:
+            return f"{dl} 截止 · 剩 {g['days_left']} 天 · ✓ 余 {MINUTES_PER_DAY - need:.0f} 分钟/天"
+        return f"{dl} 截止 · 剩 {g['days_left']} 天 · ⚠ 需 {need:.0f} 分钟/天"
+
+    def _plan_text(self):
+        day_no, total_days, task, quota_min, spent = self._plan()
+        short = task[2] if task else "—"
+        mpd = max(10, int(MINUTES_PER_DAY or 60))
+        # 只算「之前几天」该做而没做的，今天这份还没到点，不算欠账
+        behind = (day_no - 1) * mpd - spent
+        if behind > 5:
+            head = f"第 {day_no} 天 · 欠 {behind} 分钟 · 先补再往前"
+        elif behind < -5:
+            head = f"第 {day_no} 天 · 提前 {-behind} 分钟 · 今天 {mpd} 分钟"
+        else:
+            head = f"第 {day_no} 天 · 今天 {mpd} 分钟"
+        return f"{head} · {short}"
+
     def _first_open(self):
         for tid, *_ in TASKS:
             if self.state[tid]["state"] != "done":
@@ -259,7 +369,7 @@ class DaFeiYu:
         tk.Button(bar, text="✕", command=self.root.destroy, bg="#141618", fg=MUTED,
                   bd=0, activebackground="#8B3A3A", activeforeground="white",
                   font=(FONT, 11), cursor="hand2").pack(side="right", padx=(0, 6))
-        self.fold_btn = tk.Button(bar, text="—", command=self._toggle, bg="#141618", fg=MUTED,
+        self.fold_btn = tk.Button(bar, text="—", command=self._minimize, bg="#141618", fg=MUTED,
                                   bd=0, activebackground=LINE, activeforeground=FG,
                                   font=(FONT, 11), cursor="hand2")
         self.fold_btn.pack(side="right", padx=2)
@@ -287,8 +397,14 @@ class DaFeiYu:
         right.pack(side="left", padx=(12, 0))
         self.left_label = tk.Label(right, text="", bg=BG, fg=FG, font=(FONT, 10, "bold"))
         self.left_label.pack(anchor="w")
-        self.sub_label = tk.Label(right, text="", bg=BG, fg=MUTED, font=(FONT, 8))
-        self.sub_label.pack(anchor="w")
+        self.today_label = tk.Label(right, text="", bg=BG, fg=ACCENT, font=(FONT, 8),
+                                    cursor="hand2")
+        self.today_label.pack(anchor="w")
+        self.gap_label = tk.Label(right, text="", bg=BG, fg=MUTED, font=(FONT, 8),
+                                  cursor="hand2", justify="left")
+        self.gap_label.pack(anchor="w")
+        for w in (self.today_label, self.gap_label):
+            w.bind("<Button-1>", lambda e: self._open_plan())
         self.bar = tk.Canvas(self.body, height=5, bg=CARD, highlightthickness=0)
         self.bar.pack(fill="x", padx=14, pady=(8, 8))
         self.bar_fill = self.bar.create_rectangle(0, 0, 0, 5, fill=ACCENT, width=0)
@@ -437,6 +553,52 @@ class DaFeiYu:
         self.body.pack(fill="both", expand=True)
         self._reposition(W, self._target_h())
 
+    # ---------- 任务栏与最小化 ----------
+    def _hwnd(self):
+        """取顶层窗口句柄。无边框窗口的 winfo_id() 本身就是 HWND。"""
+        try:
+            import ctypes
+            hwnd = ctypes.windll.user32.GetParent(self.root.winfo_id())
+            return hwnd or self.root.winfo_id()
+        except Exception:
+            return self.root.winfo_id()
+
+    def _enable_taskbar(self):
+        """overrideredirect 窗口默认不在任务栏，加 WS_EX_APPWINDOW 才能在任务栏找到它。"""
+        if sys.platform != "win32":
+            return
+        try:
+            import ctypes
+            GWL_EXSTYLE = -20
+            WS_EX_APPWINDOW = 0x00040000
+            WS_EX_TOOLWINDOW = 0x00000080
+            self.root.update_idletasks()
+            hwnd = self._hwnd()
+            u = ctypes.windll.user32
+            style = u.GetWindowLongW(hwnd, GWL_EXSTYLE)
+            style = (style & ~WS_EX_TOOLWINDOW) | WS_EX_APPWINDOW
+            u.SetWindowLongW(hwnd, GWL_EXSTYLE, style)
+            self.root.withdraw()
+            self.root.after(10, self.root.deiconify)
+        except Exception:
+            pass
+
+    def _minimize(self):
+        """最小化到任务栏。ShowWindow 比 Tk 的 iconify 可靠，无边框窗口也认。"""
+        if getattr(self, "panel", None) is not None:
+            self._close_panel()
+        if sys.platform == "win32":
+            try:
+                import ctypes
+                ctypes.windll.user32.ShowWindow(self._hwnd(), 6)   # SW_MINIMIZE
+                return
+            except Exception:
+                pass
+        try:
+            self.root.iconify()
+        except Exception:
+            pass
+
     # ---------- 计时与学习记录 ----------
     def _toggle_timer(self):
         if self.timer_start is None:
@@ -549,6 +711,178 @@ class DaFeiYu:
                   relief="flat", highlightbackground=LINE, activebackground=LINE,
                   activeforeground=FG, font=(FONT, 9), cursor="hand2",
                   width=10).pack(side="left", padx=(8, 0))
+
+    # ---------- 计划设置 ----------
+    def _open_plan(self):
+        self._show_panel(500, 545, self._build_plan_panel)
+
+    def _write_plan(self):
+        global PLAN_START, PLAN_DEADLINE, MINUTES_PER_DAY, LEAVE_DAYS
+        try:
+            raw = json.loads(TASKS_FILE.read_text(encoding="utf-8"))
+        except Exception:
+            raw = {}
+        if not isinstance(raw, dict):
+            raw = {}
+        raw["plan"] = {"start": PLAN_START, "deadline": PLAN_DEADLINE,
+                       "minutes_per_day": MINUTES_PER_DAY,
+                       "leave_days": sorted(set(LEAVE_DAYS))}
+        TASKS_FILE.write_text(json.dumps(raw, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    def _build_plan_panel(self, parent):
+        global PLAN_DEADLINE, MINUTES_PER_DAY, LEAVE_DAYS
+        today = datetime.now().strftime("%Y-%m-%d")
+        today_d = datetime.now().date()
+
+        tk.Label(parent, text="计划设置", bg=BG, fg=ACCENT,
+                 font=(FONT, 10, "bold")).pack(anchor="w", padx=16, pady=(12, 2))
+        tk.Label(parent, text="改完点保存。今天想多做就调高每日配额，做不动就请假——请假的日子不算欠账。",
+                 bg=BG, fg=MUTED, font=(FONT, 8), wraplength=460,
+                 justify="left").pack(anchor="w", padx=16, pady=(0, 10))
+
+        # 每日配额
+        row1 = tk.Frame(parent, bg=BG)
+        row1.pack(fill="x", padx=16)
+        tk.Label(row1, text="每天", bg=BG, fg=DIM, font=(FONT, 9), width=5,
+                 anchor="w").pack(side="left")
+        mpd_entry = tk.Entry(row1, bg=CARD, fg=FG, insertbackground=FG, bd=0, font=(FONT, 9),
+                             highlightthickness=1, highlightbackground=LINE,
+                             highlightcolor=ACCENT, width=6)
+        mpd_entry.insert(0, str(MINUTES_PER_DAY))
+        mpd_entry.pack(side="left", ipady=4)
+        tk.Label(row1, text="分钟", bg=BG, fg=MUTED, font=(FONT, 8)).pack(side="left", padx=(6, 10))
+
+        def set_mpd(v):
+            mpd_entry.delete(0, "end")
+            mpd_entry.insert(0, str(v))
+            preview()
+
+        for v in (30, 45, 60, 90, 120):
+            tk.Button(row1, text=str(v), command=lambda x=v: set_mpd(x), bg=CARD, fg=DIM,
+                      bd=1, relief="flat", highlightbackground=LINE, activebackground=ACCENT,
+                      activeforeground="#111", font=(FONT, 8), cursor="hand2",
+                      width=3).pack(side="left", padx=1)
+
+        # 目标完成日
+        row2 = tk.Frame(parent, bg=BG)
+        row2.pack(fill="x", padx=16, pady=(10, 0))
+        tk.Label(row2, text="目标日", bg=BG, fg=DIM, font=(FONT, 9), width=5,
+                 anchor="w").pack(side="left")
+        dl_entry = tk.Entry(row2, bg=CARD, fg=FG, insertbackground=FG, bd=0, font=(FONT, 9),
+                            highlightthickness=1, highlightbackground=LINE,
+                            highlightcolor=ACCENT, width=14)
+        dl_entry.insert(0, PLAN_DEADLINE or "")
+        dl_entry.pack(side="left", ipady=4)
+        tk.Label(row2, text="格式 2027-05-22", bg=BG, fg=MUTED,
+                 font=(FONT, 8)).pack(side="left", padx=(8, 0))
+
+        # 请假
+        row3 = tk.Frame(parent, bg=BG)
+        row3.pack(fill="x", padx=16, pady=(10, 0))
+        tk.Label(row3, text="请假", bg=BG, fg=DIM, font=(FONT, 9), width=5,
+                 anchor="w").pack(side="left")
+        leave_var = tk.Label(row3, text="", bg=BG, fg=DOING, font=(FONT, 8))
+        leave_var.pack(side="left")
+
+        tip = tk.Label(parent, text="", bg=BG, fg=DIM, font=(FONT, 8), wraplength=460,
+                       justify="left", anchor="w")
+        tip.pack(anchor="w", padx=16, pady=(10, 0))
+
+        def read_vals():
+            try:
+                mpd = max(10, int(str(mpd_entry.get()).strip() or 0))
+            except ValueError:
+                mpd = 60
+            dl = str(dl_entry.get()).strip()
+            if dl:
+                try:
+                    datetime.strptime(dl, "%Y-%m-%d")
+                except ValueError:
+                    return None, None, "目标日格式要写成 2027-05-22"
+            return mpd, dl, None
+
+        def preview(*_):
+            mpd, dl, err = read_vals()
+            if err:
+                tip.config(text=err, fg="#E57373")
+                return
+            remain = sum(t[5] * 60 for t in TASKS if t[5]
+                         and self.state.get(t[0], {}).get("state") != "done")
+            if not dl:
+                tip.config(text=f"没设目标日。剩余 {remain/60:.0f} 小时，按每天 {mpd} 分钟约 "
+                                f"{-(-int(remain)//mpd)} 天完成。", fg=MUTED)
+                return
+            deadline = datetime.strptime(dl, "%Y-%m-%d").date()
+            if deadline < today_d:
+                tip.config(text="目标日已经过去了。", fg="#E57373")
+                return
+            total = (deadline - today_d).days + 1
+            leave_n = sum(1 for d in LEAVE_DAYS
+                          if today_d <= datetime.strptime(d, "%Y-%m-%d").date() <= deadline)
+            work = max(1, total - leave_n)
+            need = remain / work
+            ok = "✓ 来得及" if need <= mpd else f"⚠ 差 {need - mpd:.0f} 分钟/天"
+            tip.config(text=f"剩 {total} 天，扣除请假 {leave_n} 天 → 实际 {work} 个学习日。\n"
+                            f"还剩 {remain/60:.0f} 小时，需 {need:.0f} 分钟/天。{ok}",
+                       fg=OK if need <= mpd else "#E57373")
+
+        def refresh_leave():
+            today_in = today in LEAVE_DAYS
+            for w in row3.winfo_children()[2:]:
+                w.destroy()
+            tk.Button(row3, text=("取消今天请假" if today_in else "今天请假"),
+                      command=lambda: toggle_today(), bg=CARD,
+                      fg=(MUTED if today_in else DOING), bd=1, relief="flat",
+                      highlightbackground=LINE, activebackground=LINE,
+                      activeforeground=FG, font=(FONT, 8), cursor="hand2",
+                      width=12).pack(side="left", padx=(0, 6))
+            for d in sorted(LEAVE_DAYS):
+                tk.Button(row3, text=f"{d} ✕", command=lambda x=d: drop_leave(x), bg=CARD,
+                          fg=MUTED, bd=0, relief="flat", highlightbackground=LINE,
+                          activebackground="#8B3A3A", activeforeground="white",
+                          font=(FONT, 7), cursor="hand2").pack(side="left", padx=1)
+            preview()
+
+        def toggle_today():
+            if today in LEAVE_DAYS:
+                LEAVE_DAYS.remove(today)
+            else:
+                LEAVE_DAYS.append(today)
+            refresh_leave()
+
+        def drop_leave(d):
+            if d in LEAVE_DAYS:
+                LEAVE_DAYS.remove(d)
+            refresh_leave()
+
+        mpd_entry.bind("<KeyRelease>", preview)
+        dl_entry.bind("<KeyRelease>", preview)
+        refresh_leave()
+
+        status = tk.Label(parent, text="", bg=BG, fg=MUTED, font=(FONT, 8), anchor="w")
+        status.pack(fill="x", padx=16, pady=(8, 0))
+
+        row = tk.Frame(parent, bg=BG)
+        row.pack(fill="x", padx=16, pady=10)
+
+        def save():
+            mpd, dl, err = read_vals()
+            if err:
+                status.config(text=err, fg="#E57373")
+                return
+            MINUTES_PER_DAY, PLAN_DEADLINE = mpd, dl
+            self._write_plan()
+            status.config(text="已保存", fg=OK)
+            self._close_panel()
+            self._refresh()
+
+        tk.Button(row, text="保存", command=save, bg=CARD, fg=OK, bd=1, relief="flat",
+                  highlightbackground=LINE, activebackground=OK, activeforeground="#111",
+                  font=(FONT, 9, "bold"), cursor="hand2", width=9).pack(side="left")
+        tk.Button(row, text="返回", command=self._close_panel, bg=CARD, fg=MUTED, bd=1,
+                  relief="flat", highlightbackground=LINE, activebackground=LINE,
+                  activeforeground=FG, font=(FONT, 9), cursor="hand2",
+                  width=8).pack(side="right")
 
     def _open_review(self):
         _, _, short, full, crit, _h = TASK_BY_ID[self.selected]
@@ -862,7 +1196,11 @@ class DaFeiYu:
                        if self.state[tid]["state"] != "done")
         self.pct.config(text=f"{done * 100 // max(TOTAL, 1)}%")
         self.left_label.config(text=f"还剩 {TOTAL - done} {UNIT} · {remain_h:g}h")
-        self.sub_label.config(text=f"已过关 {done} / {TOTAL}" + (f"  ·  {NOTE}" if NOTE else ""))
+        plan_txt = self._plan_text()
+        self.today_label.config(text=plan_txt, fg=DOING if "欠" in plan_txt else ACCENT)
+        gap_txt = self._gap_text()
+        self.gap_label.config(text=gap_txt,
+                              fg="#E57373" if ("⚠" in gap_txt or "已过" in gap_txt) else MUTED)
         self._draw_bar()
 
         for tid, _, short, _, _, _h in TASKS:
@@ -917,6 +1255,7 @@ def main():
     root = tk.Tk()
     app = DaFeiYu(root)
     app._refresh()
+    root.after(50, app._after_show)
     if not STATE_FILE.exists():
         app._save()
     if "--smoke" in sys.argv:

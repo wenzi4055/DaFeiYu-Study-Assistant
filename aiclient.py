@@ -12,7 +12,7 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-__version__ = "0.5.0"
+__version__ = "0.8.0"
 
 # 预设服务商：base_url 与默认模型都填好，用户只填 key 即可
 PROVIDERS = {
