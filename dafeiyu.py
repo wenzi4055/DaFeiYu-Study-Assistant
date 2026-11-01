@@ -18,11 +18,11 @@ from datetime import datetime
 from pathlib import Path
 
 import tkinter as tk
-from tkinter import ttk
+from tkinter import ttk, filedialog
 
 import aiclient
 
-__version__ = "0.5.0"
+__version__ = "0.6.0"
 
 # 打包成 exe 后 __file__ 指向临时解压目录，配置与进度必须落在 exe 旁边
 APP_DIR = Path(sys.executable).parent if getattr(sys, "frozen", False) else Path(__file__).parent
@@ -181,6 +181,10 @@ ALPHA = 1.0   # 想要玻璃感就改 0.92，代价是底下窗口内容会透�
 class DaFeiYu:
     def __init__(self, root):
         self.root = root
+        self.sessions = []
+        self.timer_start = None
+        self.timer_task = None
+        self.timer_job = None
         self.state = self._load()
         self.cfg = aiclient.load_config(APP_DIR)
         self.collapsed = False
@@ -205,15 +209,28 @@ class DaFeiYu:
     # ---------- 持久化 ----------
     def _load(self):
         try:
-            data = json.loads(STATE_FILE.read_text(encoding="utf-8")).get("tasks", {})
+            raw = json.loads(STATE_FILE.read_text(encoding="utf-8"))
         except Exception:
-            data = {}
+            raw = {}
+        if not isinstance(raw, dict):
+            raw = {}
+        data = raw.get("tasks", {}) or {}
+        self.sessions = [s for s in (raw.get("sessions") or []) if isinstance(s, dict)]
         return {tid: data.get(tid, {"state": "todo", "ts": ""}) for tid, *_ in TASKS}
 
     def _save(self):
         STATE_FILE.write_text(json.dumps(
-            {"updated": datetime.now().strftime("%Y-%m-%d %H:%M"), "tasks": self.state},
+            {"updated": datetime.now().strftime("%Y-%m-%d %H:%M"),
+             "tasks": self.state, "sessions": self.sessions},
             ensure_ascii=False, indent=2), encoding="utf-8")
+
+    def _spent_minutes(self, tid):
+        return sum(int(s.get("minutes") or 0) for s in self.sessions if s.get("task") == tid)
+
+    def _recent_sessions(self, tid, n=3):
+        rows = [s for s in self.sessions if s.get("task") == tid][-n:]
+        return [f"{(s.get('end') or '')[:16]} 学了 {s.get('minutes')} 分钟：{s.get('note') or ''}"[:120]
+                for s in rows]
 
     def _first_open(self):
         for tid, *_ in TASKS:
@@ -279,8 +296,11 @@ class DaFeiYu:
         self.detail_title = tk.Label(wrap, text="", bg=CARD, fg=ACCENT,
                                      font=(FONT, 9, "bold"), anchor="w", justify="left",
                                      wraplength=W - 44)
-        self.detail_title.pack(fill="x", padx=10, pady=(8, 4))
-        self.detail_text = tk.Text(wrap, height=6, bg=CARD, fg=DIM, bd=0,
+        self.detail_title.pack(fill="x", padx=10, pady=(8, 1))
+        self.detail_meta = tk.Label(wrap, text="", bg=CARD, fg="#6E767D",
+                                    font=(FONT, 8), anchor="w", justify="left")
+        self.detail_meta.pack(fill="x", padx=10, pady=(0, 4))
+        self.detail_text = tk.Text(wrap, height=5, bg=CARD, fg=DIM, bd=0,
                                    font=(FONT, 8), wrap="word", cursor="arrow",
                                    highlightthickness=0, padx=0, pady=0,
                                    selectbackground=CARD, spacing1=1, spacing3=3)
@@ -296,6 +316,12 @@ class DaFeiYu:
                       bg=CARD, fg=color, bd=1, relief="flat", highlightbackground=LINE,
                       activebackground=color, activeforeground="#111",
                       font=(FONT, 9, "bold"), cursor="hand2", width=6).pack(side="left", padx=2)
+        self.timer_btn = tk.Button(btns, text="▶ 计时", command=self._toggle_timer,
+                                   bg=CARD, fg="#BA9BF2", bd=1, relief="flat",
+                                   highlightbackground=LINE, activebackground="#BA9BF2",
+                                   activeforeground="#111", font=(FONT, 9, "bold"),
+                                   cursor="hand2", width=6)
+        self.timer_btn.pack(side="left", padx=2)
         self.review_btn = tk.Button(btns, text="AI 批改", command=self._open_review,
                                     bg=CARD, fg=ACCENT, bd=1, relief="flat",
                                     highlightbackground=LINE, activebackground=ACCENT,
@@ -407,9 +433,122 @@ class DaFeiYu:
         self.body.pack(fill="both", expand=True)
         self._reposition(W, self._target_h())
 
+    # ---------- 计时与学习记录 ----------
+    def _toggle_timer(self):
+        if self.timer_start is None:
+            self.timer_start = datetime.now()
+            self.timer_task = self.selected
+            self.timer_btn.config(fg=OK)
+            self._tick()
+        else:
+            self._open_session_form()
+
+    def _tick(self):
+        if self.timer_start is None:
+            return
+        secs = int((datetime.now() - self.timer_start).total_seconds())
+        m, s = divmod(secs, 60)
+        self.timer_btn.config(text=f"■ {m:02d}:{s:02d}")
+        self.timer_job = self.root.after(1000, self._tick)
+
+    def _stop_tick(self):
+        if self.timer_job:
+            try:
+                self.root.after_cancel(self.timer_job)
+            except Exception:
+                pass
+            self.timer_job = None
+
+    def _cancel_timer(self):
+        self.timer_start = None
+        self.timer_task = None
+        self._stop_tick()
+        try:
+            self.timer_btn.config(text="▶ 计时", fg="#BA9BF2")
+        except Exception:
+            pass
+
+    def _open_session_form(self):
+        elapsed = 0
+        if self.timer_start:
+            elapsed = max(1, int((datetime.now() - self.timer_start).total_seconds() // 60))
+        tid = self.timer_task or self.selected
+        self._show_panel(480, 480, lambda p: self._build_session_panel(p, tid, elapsed))
+
+    def _build_session_panel(self, parent, tid, elapsed):
+        _, _, short, full, crit, budget = TASK_BY_ID[tid]
+        spent = self._spent_minutes(tid) / 60
+
+        tk.Label(parent, text=f"记录这次学习 · {short}", bg=BG, fg="#BA9BF2",
+                 font=(FONT, 10, "bold")).pack(anchor="w", padx=16, pady=(14, 2))
+        tk.Label(parent, text=f"计时 {elapsed} 分钟（可以改）· 该项已投入 {spent:.1f}h / 预算 {budget:g}h",
+                 bg=BG, fg=MUTED, font=(FONT, 8)).pack(anchor="w", padx=16, pady=(0, 10))
+
+        line = tk.Frame(parent, bg=BG)
+        line.pack(fill="x", padx=16)
+        tk.Label(line, text="用时", bg=BG, fg=DIM, font=(FONT, 9), width=6,
+                 anchor="w").pack(side="left")
+        mins = tk.Entry(line, bg=CARD, fg=FG, insertbackground=FG, bd=0, font=(FONT, 9),
+                        highlightthickness=1, highlightbackground=LINE,
+                        highlightcolor=ACCENT, width=8)
+        mins.insert(0, str(elapsed))
+        mins.pack(side="left", ipady=4)
+        tk.Label(line, text="分钟", bg=BG, fg=MUTED, font=(FONT, 8)).pack(side="left", padx=(6, 0))
+
+        tk.Label(parent, text="这次学到哪 / 卡在哪（写清楚，AI 批改会读它）", bg=BG, fg=MUTED,
+                 font=(FONT, 8)).pack(anchor="w", padx=16, pady=(12, 4))
+        note = tk.Text(parent, height=7, bg=CARD, fg=FG, insertbackground=FG, bd=0,
+                       font=(FONT, 9), wrap="word", padx=10, pady=8, highlightthickness=0)
+        note.pack(fill="x", padx=16)
+        note.focus_set()
+
+        status = tk.Label(parent, text="", bg=BG, fg=MUTED, font=(FONT, 8), anchor="w")
+        status.pack(fill="x", padx=16, pady=(8, 0))
+
+        row = tk.Frame(parent, bg=BG)
+        row.pack(fill="x", padx=16, pady=12)
+
+        def save():
+            try:
+                m = int(str(mins.get()).strip() or elapsed)
+            except ValueError:
+                status.config(text="用时要填数字", fg="#E57373")
+                return
+            if m <= 0:
+                status.config(text="用时至少 1 分钟", fg="#E57373")
+                return
+            text = note.get("1.0", "end").strip()
+            if len(text) < 4:
+                status.config(text="写一句学到哪，空记录没有意义。", fg="#E57373")
+                return
+            self.sessions.append({
+                "task": tid,
+                "start": self.timer_start.isoformat(timespec="minutes") if self.timer_start else "",
+                "end": datetime.now().strftime("%Y-%m-%d %H:%M"),
+                "minutes": m,
+                "note": text,
+            })
+            self._save()
+            self._cancel_timer()
+            self._close_panel()
+            self._refresh()
+
+        def discard():
+            self._cancel_timer()
+            self._close_panel()
+            self._refresh()
+
+        tk.Button(row, text="保存记录", command=save, bg=CARD, fg=OK, bd=1, relief="flat",
+                  highlightbackground=LINE, activebackground=OK, activeforeground="#111",
+                  font=(FONT, 9, "bold"), cursor="hand2", width=10).pack(side="left")
+        tk.Button(row, text="放弃这次", command=discard, bg=CARD, fg=MUTED, bd=1,
+                  relief="flat", highlightbackground=LINE, activebackground=LINE,
+                  activeforeground=FG, font=(FONT, 9), cursor="hand2",
+                  width=10).pack(side="left", padx=(8, 0))
+
     def _open_review(self):
         _, _, short, full, crit, _h = TASK_BY_ID[self.selected]
-        self._show_panel(520, 640, lambda p: self._build_review_panel(p, short, full, crit))
+        self._show_panel(520, 700, lambda p: self._build_review_panel(p, short, full, crit))
 
     def _build_review_panel(self, parent, short, full, crit):
         tk.Label(parent, text=f"AI 批改 · {short}", bg=BG, fg=ACCENT,
@@ -433,13 +572,39 @@ class DaFeiYu:
 
         inp.bind("<FocusIn>", clear_placeholder)
         inp.bind("<Button-1>", clear_placeholder, add="+")
-        inp.focus_set()
 
         status = tk.Label(parent, text="", bg=BG, fg=MUTED, font=(FONT, 8),
-                          anchor="w", justify="left")
+                          anchor="w", justify="left", wraplength=470)
         status.pack(fill="x", padx=14, pady=(6, 0))
 
-        out = tk.Text(parent, height=12, bg=CARD, fg=DIM, bd=0, font=(FONT, 9), wrap="word",
+        picked = []
+
+        file_row = tk.Frame(parent, bg=BG)
+        file_row.pack(fill="x", padx=14, pady=(6, 0))
+        file_label = tk.Label(file_row, text="可附手写推导照片 / 代码文件", bg=BG, fg=MUTED,
+                              font=(FONT, 8), anchor="w", justify="left", wraplength=380)
+        file_label.pack(side="left", fill="x", expand=True)
+
+        def pick_files():
+            paths = filedialog.askopenfilenames(
+                parent=parent, title="选图片或文本文件",
+                filetypes=[("图片", "*.png *.jpg *.jpeg *.webp *.bmp"),
+                           ("文本 / 代码", "*.txt *.md *.py *.c *.cpp *.h *.java *.cs *.json *.csv"),
+                           ("全部文件", "*.*")])
+            for p in paths:
+                if p not in picked:
+                    picked.append(p)
+            if picked:
+                names = "、".join(Path(p).name for p in picked[:3])
+                more = f" 等 {len(picked)} 个" if len(picked) > 3 else ""
+                file_label.config(text=f"已选：{names}{more}", fg=ACCENT)
+
+        tk.Button(file_row, text="＋ 添加", command=pick_files, bg=CARD, fg=ACCENT, bd=1,
+                  relief="flat", highlightbackground=LINE, activebackground=ACCENT,
+                  activeforeground="#111", font=(FONT, 8, "bold"), cursor="hand2",
+                  width=7).pack(side="right")
+
+        out = tk.Text(parent, height=11, bg=CARD, fg=DIM, bd=0, font=(FONT, 9), wrap="word",
                       padx=10, pady=8, highlightthickness=0, state="disabled")
         out.pack(fill="both", expand=True, padx=14, pady=(6, 0))
 
@@ -461,18 +626,35 @@ class DaFeiYu:
 
         def submit():
             report = "" if str(inp.cget("fg")) == MUTED else inp.get("1.0", "end").strip()
-            if len(report) < 10:
-                status.config(text="汇报太短了。写清你做了什么、怎么验证的。", fg="#E57373")
+            if len(report) < 10 and not picked:
+                status.config(text="汇报太短了。写清过程，或者加一张手写推导的照片。", fg="#E57373")
                 return
             if not aiclient.is_ready(self.cfg):
                 status.config(text="还没配 API Key。点标题栏的 API 按钮填一个。", fg=DOING)
                 return
+
+            images, texts = [], []
+            for p in picked:
+                try:
+                    kind, data = aiclient.read_attachment(p)
+                except Exception as e:
+                    status.config(text=str(e), fg="#E57373")
+                    return
+                if kind == "image":
+                    images.append(data)
+                else:
+                    texts.append(f"【附件 {Path(p).name}】\n{data}")
+            if texts:
+                report = (report + "\n\n" + "\n\n".join(texts)).strip()
+
             btn.config(state="disabled", text="批改中…")
-            status.config(text="已发出，等模型回…", fg=DOING)
+            status.config(text=f"已发出（{len(images)} 张图）等模型回…", fg=DOING)
 
             def worker():
                 try:
-                    text = aiclient.review(self.cfg, full, crit, report)
+                    text = aiclient.review(self.cfg, full, crit, report,
+                                           attachments=images or None,
+                                           sessions=self._recent_sessions(self.selected))
                     self.root.after(0, lambda t=text: done(t))
                 except Exception as e:
                     self.root.after(0, lambda m=str(e): done(None, m))
@@ -644,6 +826,11 @@ class DaFeiYu:
 
         _, _, _, full, crit, hours = TASK_BY_ID[self.selected]
         self.detail_title.config(text=f"{full}    〔预计 {hours:g}h〕")
+        spent = self._spent_minutes(self.selected) / 60
+        cnt = sum(1 for s in self.sessions if s.get("task") == self.selected)
+        self.detail_meta.config(
+            text=f"已投入 {spent:.1f}h / 预算 {hours:g}h · {cnt} 次学习记录" if cnt
+            else f"还没记录过学习过程 · 预算 {hours:g}h · 点「▶ 计时」开始")
         self.detail_text.config(state="normal")
         self.detail_text.delete("1.0", "end")
         self.detail_text.insert("end", "\n".join(f"{i}. {c}" for i, c in enumerate(crit, 1))
