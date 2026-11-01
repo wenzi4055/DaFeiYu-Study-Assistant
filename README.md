@@ -1,6 +1,6 @@
 # DaFeiYu · 大肥鱼监工器
 
-**当前版本 v0.7.0** · [变更记录](CHANGELOG.md) · [MIT](LICENSE) · Python 3.8+
+**当前版本 v0.7.1** · [变更记录](CHANGELOG.md) · [MIT](LICENSE) · Python 3.8+
 
 一个只管三件事的桌面悬浮窗：**你还剩几项没做、下一项是什么、怎么才算过关。**
 
