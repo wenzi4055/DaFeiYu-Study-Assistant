@@ -23,7 +23,7 @@ from tkinter import ttk, filedialog
 import aiclient
 import clipimg
 
-__version__ = "0.8.0"
+__version__ = "0.9.0"
 
 # 打包成 exe 后 __file__ 指向临时解压目录，配置与进度必须落在 exe 旁边
 APP_DIR = Path(sys.executable).parent if getattr(sys, "frozen", False) else Path(__file__).parent
@@ -33,6 +33,14 @@ TASKS_FILE = APP_DIR / "tasks.json"
 # 内置示例任务池（首次运行时写出 tasks.json，之后一切以 tasks.json 为准）
 # (id, 模块, 列表短名, 详情全名, 验收标准)
 DEFAULT_TASKS = [
+    ("ds0", "数据结构", "线性表/栈/队列", "第 1-3 章：绪论 + 线性表 + 栈和队列", [
+        "单链表：头插、尾插、按值删除、就地逆置，代码手写全部跑通",
+        "双链表与循环链表：能画图说清插入删除时到底改几个指针",
+        "栈：顺序栈 / 链栈 push-pop 跑通，括号匹配 + 表达式求值各 1 题",
+        "队列：循环队列判空/判满公式默写，链队列入队出队跑通",
+        "复杂度：各操作 O(1) 还是 O(n)，能当场说明理由",
+        "第 2 章课后练习全做，正确率 ≥80%",
+    ]),
     ("ds1", "数据结构", "数组与广义表", "数组与广义表 · 初学打通", [
         "能画出 8 个元素的连续内存格子图，每个格子标出地址",
         "能说清「数组为什么不用遍历就能算出地址」——连续、等长、可乘",
@@ -126,8 +134,8 @@ LEAVE_DAYS = []
 # 每项预计投入小时数（学 + 练 + 测）。依据：内容量 × 视频倍速 × 练习系数。
 # 改了 tasks.json 却没写 hours 时，按 id 查这张表兜底。
 HOURS = {
-    # 数据结构学段已按实测课时校正：38 讲 / 571 分钟 / 1.5 倍速 / 含消化
-    "ds1": 6.2, "ds2": 9.5, "ds3": 8.5, "ds4": 9.5, "ds5": 14,
+    # 数据结构：38 讲 / 571 分钟，第一章 50.8 分钟为实测，其余按内容密度分配
+    "ds0": 8.5, "ds1": 5.8, "ds2": 8.5, "ds3": 7.8, "ds4": 9.6, "ds5": 14,
     # 软考网工已按希赛录播实测校正：2659 分钟 / 1.5 倍速 / 含消化
     "ne1": 7.6, "ne2": 14.5, "ne3": 19.9, "ne4": 24.4, "ne5": 22,
     # 离散数学已解冻；还没有课程表，32h 是估算
@@ -727,6 +735,39 @@ class DaFeiYu:
                   activeforeground=FG, font=(FONT, 9), cursor="hand2",
                   width=10).pack(side="left", padx=(8, 0))
 
+    # ---------- 语音输入 ----------
+    def _listen_once(self, on_text):
+        """调 Windows 离线语音引擎识别一句。on_text 收到文本，空串表示没听清。"""
+        if sys.platform != "win32":
+            on_text("")
+            return
+        ps = (
+            "[Console]::OutputEncoding=[System.Text.Encoding]::UTF8;"
+            "Add-Type -AssemblyName System.Speech;"
+            "$r=New-Object System.Speech.Recognition.SpeechRecognitionEngine;"
+            "$r.SetInputToDefaultAudioDevice();"
+            "$r.LoadGrammar((New-Object System.Speech.Recognition.DictationGrammar));"
+            "$r.InitialSilenceTimeout=[TimeSpan]::FromSeconds(6);"
+            "$r.EndSilenceTimeout=[TimeSpan]::FromSeconds(1.5);"
+            "$res=$r.Recognize();"
+            "if($res){[Console]::Out.Write($res.Text)}"
+        )
+
+        def worker():
+            txt = ""
+            try:
+                import subprocess
+                out = subprocess.run(
+                    ["powershell", "-NoProfile", "-STA", "-Command", ps],
+                    capture_output=True, timeout=40,
+                    creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+                txt = (out.stdout or b"").decode("utf-8", "replace").strip()
+            except Exception:
+                txt = ""
+            self.root.after(0, lambda t=txt: on_text(t))
+
+        threading.Thread(target=worker, daemon=True).start()
+
     # ---------- 计划设置 ----------
     def _open_plan(self):
         self._show_panel(500, 545, self._build_plan_panel)
@@ -934,14 +975,38 @@ class DaFeiYu:
 
         file_row = tk.Frame(parent, bg=BG)
         file_row.pack(fill="x", padx=14, pady=(6, 0))
-        file_label = tk.Label(file_row, text="截图后按 Ctrl+V 直接粘，或点「＋ 添加」选文件",
+        file_label = tk.Label(file_row, text="截图后 Ctrl+V 粘图 · 也可用语音说你的推导",
                               bg=BG, fg=MUTED, font=(FONT, 8), anchor="w",
-                              justify="left", wraplength=370)
+                              justify="left", wraplength=280)
         file_label.pack(side="left", fill="x", expand=True)
+
+        def start_speech():
+            speak_btn.config(state="disabled", text="听…")
+            status.config(text="正在听，说完停顿一下会自动结束（第一次会要麦克风权限）", fg=DOING)
+
+            def got(txt):
+                speak_btn.config(state="normal", text="语音输入")
+                if not txt:
+                    status.config(text="没听清。靠近麦克风再说一次，或按 Win+H 用系统语音输入",
+                                  fg="#E57373")
+                    return
+                clear_placeholder()
+                cur = inp.get("1.0", "end").strip()
+                inp.insert("end", ("\n" if cur else "") + txt)
+                inp.see("end")
+                status.config(text=f"听写：{txt[:50]}", fg=OK)
+
+            self._listen_once(got)
+
+        speak_btn = tk.Button(file_row, text="语音输入", command=start_speech, bg=CARD,
+                              fg="#BA9BF2", bd=1, relief="flat", highlightbackground=LINE,
+                              activebackground="#BA9BF2", activeforeground="#111",
+                              font=(FONT, 8, "bold"), cursor="hand2", width=9)
+        speak_btn.pack(side="left", padx=(0, 6), before=file_label)
 
         def refresh_label():
             if not picked:
-                file_label.config(text="截图后按 Ctrl+V 直接粘，或点「＋ 添加」选文件", fg=MUTED)
+                file_label.config(text="截图后 Ctrl+V 粘图 · 也可用语音说你的推导", fg=MUTED)
                 return
             imgs = sum(1 for x in picked if x["kind"] == "image")
             parts = []
