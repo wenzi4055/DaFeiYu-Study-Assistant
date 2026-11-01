@@ -97,13 +97,21 @@ TASKS = []
 TOTAL = 0
 TASK_BY_ID = {}
 
+# 每项预计投入小时数（学 + 练 + 测）。依据：内容量 × 视频倍速 × 练习系数。
+# 改了 tasks.json 却没写 hours 时，按 id 查这张表兜底。
+HOURS = {
+    "ds1": 4, "ds2": 12, "ds3": 11, "ds4": 11, "ds5": 14,
+    "ne1": 7, "ne2": 13, "ne3": 13, "ne4": 16, "ne5": 22,
+}
+
 
 def _default_config():
     return {
         "title": "大肥鱼监工器",
         "note": "离散数学冻结不计数",
         "unit": "项大任务",
-        "tasks": [{"id": i, "module": m, "short": s, "full": f, "criteria": list(c)}
+        "tasks": [{"id": i, "module": m, "short": s, "full": f,
+                   "criteria": list(c), "hours": HOURS.get(i, 0)}
                   for i, m, s, f, c in DEFAULT_TASKS],
     }
 
@@ -133,8 +141,12 @@ def load_config():
             continue
         tid = str(t.get("id") or f"task{n}")
         short = t.get("short") or t.get("full") or tid
+        try:
+            hours = float(t.get("hours") if t.get("hours") is not None else HOURS.get(tid, 0))
+        except (TypeError, ValueError):
+            hours = float(HOURS.get(tid, 0))
         tasks.append((tid, t.get("module") or "", short, t.get("full") or short,
-                      [str(c) for c in (t.get("criteria") or [])]))
+                      [str(c) for c in (t.get("criteria") or [])], hours))
     if not tasks:                      # 全是不合法条目时仍给一份可用的
         raw = _default_config()
         tasks = [(i, m, s, f, list(c)) for i, m, s, f, c in DEFAULT_TASKS]
@@ -285,7 +297,7 @@ class DaFeiYu:
                           lambda e: self.listbox.itemconfigure(self._inner, width=e.width))
 
         self.rows = {}
-        for tid, mod, short, _, _ in TASKS:
+        for tid, mod, short, _, _, _h in TASKS:
             row = tk.Frame(inner, bg=CARD, cursor="hand2")
             row.pack(fill="x", pady=1)
             dot = tk.Label(row, text="○", bg=CARD, fg=MUTED, font=(FONT, 8))
@@ -354,12 +366,14 @@ class DaFeiYu:
 
     def _refresh(self):
         done = sum(1 for v in self.state.values() if v["state"] == "done")
+        remain_h = sum(h for tid, _, _, _, _, h in TASKS
+                       if self.state[tid]["state"] != "done")
         self.pct.config(text=f"{done * 100 // max(TOTAL, 1)}%")
-        self.left_label.config(text=f"还剩 {TOTAL - done} {UNIT}没做完")
+        self.left_label.config(text=f"还剩 {TOTAL - done} {UNIT} · {remain_h:g}h")
         self.sub_label.config(text=f"已过关 {done} / {TOTAL}" + (f"  ·  {NOTE}" if NOTE else ""))
         self._draw_bar()
 
-        for tid, _, short, _, _ in TASKS:
+        for tid, _, short, _, _, _h in TASKS:
             row, dot, name, tag = self.rows[tid]
             st = self.state[tid]["state"]
             color = {"done": OK, "doing": DOING, "todo": MUTED}[st]
@@ -370,8 +384,8 @@ class DaFeiYu:
             dot.config(text=mark, fg=color)
             name.config(fg=DIM if st == "done" else FG)
 
-        *_, full, crit = TASK_BY_ID[self.selected]
-        self.detail_title.config(text=full)
+        _, _, _, full, crit, hours = TASK_BY_ID[self.selected]
+        self.detail_title.config(text=f"{full}    〔预计 {hours:g}h〕")
         self.detail_text.config(state="normal")
         self.detail_text.delete("1.0", "end")
         self.detail_text.insert("end", "\n".join(f"{i}. {c}" for i, c in enumerate(crit, 1))
