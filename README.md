@@ -54,6 +54,8 @@
 
 三分钟接入，[完整引导见 docs/API_SETUP.md](docs/API_SETUP.md)：五家服务商对比（DeepSeek 一次批改约 ¥0.001）、拿 Key 的步骤、报错对照表、隐私边界。
 
+![API 设置面板](docs/settings.png)
+
 ```json
 // config.json（首次启动自动生成，已 gitignore）
 { "base_url": "https://api.deepseek.com/v1", "model": "deepseek-chat",
