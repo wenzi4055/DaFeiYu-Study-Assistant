@@ -21,8 +21,9 @@ import tkinter as tk
 from tkinter import ttk, filedialog
 
 import aiclient
+import clipimg
 
-__version__ = "0.6.0"
+__version__ = "0.7.0"
 
 # 打包成 exe 后 __file__ 指向临时解压目录，配置与进度必须落在 exe 旁边
 APP_DIR = Path(sys.executable).parent if getattr(sys, "frozen", False) else Path(__file__).parent
@@ -573,17 +574,32 @@ class DaFeiYu:
         inp.bind("<FocusIn>", clear_placeholder)
         inp.bind("<Button-1>", clear_placeholder, add="+")
 
+        picked = []          # {"kind":"image","b64","mime","name"} 或 {"kind":"file","path"}
+
         status = tk.Label(parent, text="", bg=BG, fg=MUTED, font=(FONT, 8),
                           anchor="w", justify="left", wraplength=470)
         status.pack(fill="x", padx=14, pady=(6, 0))
 
-        picked = []
-
         file_row = tk.Frame(parent, bg=BG)
         file_row.pack(fill="x", padx=14, pady=(6, 0))
-        file_label = tk.Label(file_row, text="可附手写推导照片 / 代码文件", bg=BG, fg=MUTED,
-                              font=(FONT, 8), anchor="w", justify="left", wraplength=380)
+        file_label = tk.Label(file_row, text="截图后按 Ctrl+V 直接粘，或点「＋ 添加」选文件",
+                              bg=BG, fg=MUTED, font=(FONT, 8), anchor="w",
+                              justify="left", wraplength=370)
         file_label.pack(side="left", fill="x", expand=True)
+
+        def refresh_label():
+            if not picked:
+                file_label.config(text="截图后按 Ctrl+V 直接粘，或点「＋ 添加」选文件", fg=MUTED)
+                return
+            imgs = sum(1 for x in picked if x["kind"] == "image")
+            parts = []
+            if imgs:
+                parts.append(f"{imgs} 张图")
+            files = [x["path"] for x in picked if x["kind"] == "file"]
+            if files:
+                shown = "、".join(Path(p).name for p in files[:2])
+                parts.append(shown + (f" 等 {len(files)} 个文件" if len(files) > 2 else ""))
+            file_label.config(text="已选：" + "、".join(parts), fg=ACCENT)
 
         def pick_files():
             paths = filedialog.askopenfilenames(
@@ -592,17 +608,47 @@ class DaFeiYu:
                            ("文本 / 代码", "*.txt *.md *.py *.c *.cpp *.h *.java *.cs *.json *.csv"),
                            ("全部文件", "*.*")])
             for p in paths:
-                if p not in picked:
-                    picked.append(p)
-            if picked:
-                names = "、".join(Path(p).name for p in picked[:3])
-                more = f" 等 {len(picked)} 个" if len(picked) > 3 else ""
-                file_label.config(text=f"已选：{names}{more}", fg=ACCENT)
+                if not any(x.get("path") == p for x in picked):
+                    picked.append({"kind": "file", "path": p})
+            refresh_label()
+
+        def paste(_=None):
+            """优先按图片粘；剪贴板里没有图就放行，走正常文本粘贴。"""
+            clear_placeholder()
+            try:
+                img = clipimg.grab_image(self.root)
+            except Exception as e:
+                status.config(text=f"读剪贴板失败：{e}", fg="#E57373")
+                return None
+            if img:
+                picked.append({"kind": "image", "b64": img["b64"],
+                               "mime": img["mime"], "name": img["name"]})
+                refresh_label()
+                status.config(text=f"已粘入剪贴板图片（{img['bytes'] // 1024} KB）", fg=OK)
+                return "break"
+            try:
+                files = clipimg.clipboard_files()
+            except Exception:
+                files = []
+            if files:
+                added = 0
+                for p in files:
+                    if not any(x.get("path") == p for x in picked):
+                        picked.append({"kind": "file", "path": p})
+                        added += 1
+                refresh_label()
+                if added:
+                    status.config(text=f"已粘入 {added} 个文件", fg=OK)
+                    return "break"
+            return None
 
         tk.Button(file_row, text="＋ 添加", command=pick_files, bg=CARD, fg=ACCENT, bd=1,
                   relief="flat", highlightbackground=LINE, activebackground=ACCENT,
                   activeforeground="#111", font=(FONT, 8, "bold"), cursor="hand2",
                   width=7).pack(side="right")
+
+        inp.bind("<Control-v>", paste)
+        inp.bind("<Control-V>", paste)
 
         out = tk.Text(parent, height=11, bg=CARD, fg=DIM, bd=0, font=(FONT, 9), wrap="word",
                       padx=10, pady=8, highlightthickness=0, state="disabled")
@@ -634,22 +680,25 @@ class DaFeiYu:
                 return
 
             images, texts = [], []
-            for p in picked:
+            for item in picked:
+                if item["kind"] == "image":
+                    images.append({"b64": item["b64"], "mime": item["mime"],
+                                   "name": item.get("name") or "图片"})
+                    continue
                 try:
-                    kind, data = aiclient.read_attachment(p)
+                    kind, data = aiclient.read_attachment(item["path"])
                 except Exception as e:
                     status.config(text=str(e), fg="#E57373")
                     return
                 if kind == "image":
                     images.append(data)
                 else:
-                    texts.append(f"【附件 {Path(p).name}】\n{data}")
+                    texts.append(f"【附件 {Path(item['path']).name}】\n{data}")
             if texts:
                 report = (report + "\n\n" + "\n\n".join(texts)).strip()
 
             btn.config(state="disabled", text="批改中…")
             status.config(text=f"已发出（{len(images)} 张图）等模型回…", fg=DOING)
-
             def worker():
                 try:
                     text = aiclient.review(self.cfg, full, crit, report,
