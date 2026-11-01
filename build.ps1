@@ -1,4 +1,4 @@
-# 重新打包单文件 exe（Windows）。产物：dist\DaFeiYu.exe
+﻿# 重新打包单文件 exe（Windows）。产物：dist\DaFeiYu.exe
 # 用法：右键“使用 PowerShell 运行”，或在终端执行 .\build.ps1
 
 $ErrorActionPreference = "Stop"

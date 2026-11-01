@@ -1,4 +1,4 @@
-# 推送到 GitHub。用法：
+﻿# 推送到 GitHub。用法：
 #   .\push.ps1
 # 推送时 Git Credential Manager 会弹浏览器，点授权即可，不需要手打密码或 token。
 

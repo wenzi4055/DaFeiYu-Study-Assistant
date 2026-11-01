@@ -1,4 +1,4 @@
-# 一键发版：构建 exe -> 提交 -> 打 tag -> SSH 推送 -> 建 Release 挂 exe
+﻿# 一键发版：构建 exe -> 提交 -> 打 tag -> SSH 推送 -> 建 Release 挂 exe
 #
 # 用法：
 #   .\auto_publish.ps1                 用当前 __version__ 发版
@@ -26,7 +26,10 @@ Write-Host "版本: $version" -ForegroundColor Cyan
 if (-not $SkipBuild) {
     Get-Process DaFeiYu -ErrorAction SilentlyContinue | Stop-Process -Force
     Start-Sleep -Milliseconds 400
+    # PyInstaller 把日志写 stderr，Stop 模式下会被当成致命错误，这里临时放开
+    $ErrorActionPreference = "Continue"
     python -m PyInstaller --noconfirm --clean --onefile --noconsole --name DaFeiYu dafeiyu.py 2>&1 | Select-Object -Last 1
+    $ErrorActionPreference = "Stop"
     Remove-Item DaFeiYu.spec -ErrorAction SilentlyContinue
     if (-not (Test-Path "dist\DaFeiYu.exe")) { Write-Error "打包失败"; exit 1 }
     Write-Host "打包完成: dist\DaFeiYu.exe" -ForegroundColor Green
