@@ -1,0 +1,23 @@
+# 本地进度账本，属于个人数据
+dafeiyu_state.json
+dafeiyu_state.json.bak
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+
+# 编辑器 / 系统
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+desktop.ini
+*.log
+
+# 本地素材，别误传
+*.psd
+raw_shots/
