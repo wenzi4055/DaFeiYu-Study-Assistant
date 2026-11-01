@@ -20,7 +20,7 @@ from pathlib import Path
 import tkinter as tk
 
 
-__version__ = "1.1.2"
+__version__ = "1.1.3"
 
 # 打包成 exe 后 __file__ 指向临时解压目录，配置与进度必须落在 exe 旁边
 APP_DIR = Path(sys.executable).parent if getattr(sys, "frozen", False) else Path(__file__).parent
@@ -702,6 +702,16 @@ class DaFeiYu:
 
         bar.bind("<Configure>", draw)
 
+        # 按钮行必须先占住底部，否则会被下面 expand=True 的 Text 挤出窗口
+        row = tk.Frame(parent, bg=BG)
+        row.pack(side="bottom", fill="x", padx=16, pady=(0, 12))
+        tk.Label(row, text="存在 dafeiyu_state.json 的 sessions 里", bg=BG, fg="#5C646B",
+                 font=(FONT, 7)).pack(side="left")
+        tk.Button(row, text="返回", command=self._close_panel, bg=CARD, fg=MUTED, bd=1,
+                  relief="flat", highlightbackground=LINE, activebackground=LINE,
+                  activeforeground=FG, font=(FONT, 9), cursor="hand2",
+                  width=8).pack(side="right")
+
         body = tk.Text(parent, bg=CARD, fg="#C9CFD6", bd=0, font=(FONT, 9), wrap="word",
                        padx=12, pady=10, highlightthickness=0, state="normal")
         body.pack(fill="both", expand=True, padx=16, pady=(0, 8))
@@ -713,15 +723,6 @@ class DaFeiYu:
                 body.insert("end", f'{x.get("end") or "—"}    {x.get("minutes")} 分钟\n')
                 body.insert("end", f'  {x.get("note") or "（没写内容）"}\n\n')
         body.config(state="disabled")
-
-        row = tk.Frame(parent, bg=BG)
-        row.pack(fill="x", padx=16, pady=(0, 12))
-        tk.Button(row, text="返回", command=self._close_panel, bg=CARD, fg=MUTED, bd=1,
-                  relief="flat", highlightbackground=LINE, activebackground=LINE,
-                  activeforeground=FG, font=(FONT, 9), cursor="hand2",
-                  width=8).pack(side="right")
-        tk.Label(row, text=f"存在 dafeiyu_state.json 的 sessions 里", bg=BG, fg="#5C646B",
-                 font=(FONT, 7)).pack(side="left")
 
     # ---------- 语音输入 ----------
     def _listen_once(self, on_text):
