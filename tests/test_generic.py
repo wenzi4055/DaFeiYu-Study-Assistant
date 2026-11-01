@@ -62,7 +62,9 @@ root.destroy()
 TASKS.write_text("{ 这不是 json", encoding="utf-8")
 dafeiyu.load_config()
 print("损坏配置 -> 回退任务数:", dafeiyu.TOTAL, "| 标题:", dafeiyu.APP_TITLE)
-assert dafeiyu.TOTAL == 12
+# 不硬编码项数：回退后应当等于源码默认任务数，项数变化不该让测试失败
+assert dafeiyu.TOTAL == len(dafeiyu.DEFAULT_TASKS), \
+    f"回退后项数 {dafeiyu.TOTAL} != 源码默认 {len(dafeiyu.DEFAULT_TASKS)}"
 
 for f in (STATE, TASKS):
     f.unlink(missing_ok=True)
