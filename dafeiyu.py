@@ -13,12 +13,16 @@
 
 import json
 import sys
+import threading
 from datetime import datetime
 from pathlib import Path
 
 import tkinter as tk
+from tkinter import ttk
 
-__version__ = "0.4.0"
+import aiclient
+
+__version__ = "0.5.0"
 
 # 打包成 exe 后 __file__ 指向临时解压目录，配置与进度必须落在 exe 旁边
 APP_DIR = Path(sys.executable).parent if getattr(sys, "frozen", False) else Path(__file__).parent
@@ -178,6 +182,7 @@ class DaFeiYu:
     def __init__(self, root):
         self.root = root
         self.state = self._load()
+        self.cfg = aiclient.load_config(APP_DIR)
         self.collapsed = False
         self.selected = self._first_open()
 
@@ -238,7 +243,10 @@ class DaFeiYu:
                                   font=(FONT, 11), cursor="hand2")
         self.fold_btn.pack(side="right", padx=2)
         tk.Label(bar, text=f"v{__version__}", bg="#141618", fg="#4A5056",
-                 font=(FONT, 7)).pack(side="right", padx=(0, 4))
+                 font=(FONT, 7)).pack(side="right", padx=(0, 6))
+        tk.Button(bar, text="API", command=self._open_settings, bg="#141618", fg=ACCENT if aiclient.is_ready(self.cfg) else MUTED,
+                  bd=0, activebackground=LINE, activeforeground=FG,
+                  font=(FONT, 8, "bold"), cursor="hand2").pack(side="right", padx=(0, 2))
         bar.bind("<ButtonPress-1>", self._drag_start)
         bar.bind("<B1-Motion>", self._drag)
         bar.bind("<Double-Button-1>", lambda e: self._toggle())
@@ -280,14 +288,20 @@ class DaFeiYu:
         self.detail_text.bind("<MouseWheel>", self._detail_wheel)
 
         btns = tk.Frame(wrap, bg=CARD)
-        btns.pack(fill="x", padx=8, pady=6)
+        btns.pack(fill="x", padx=6, pady=6)
         for text, color, st in (("✔ 过关", OK, "done"),
                                 ("◐ 在途", DOING, "doing"),
                                 ("↺ 打回", "#E57373", "todo")):
             tk.Button(btns, text=text, command=lambda s=st: self._set(s),
                       bg=CARD, fg=color, bd=1, relief="flat", highlightbackground=LINE,
                       activebackground=color, activeforeground="#111",
-                      font=(FONT, 9, "bold"), cursor="hand2", width=8).pack(side="left", padx=3)
+                      font=(FONT, 9, "bold"), cursor="hand2", width=6).pack(side="left", padx=2)
+        self.review_btn = tk.Button(btns, text="AI 批改", command=self._open_review,
+                                    bg=CARD, fg=ACCENT, bd=1, relief="flat",
+                                    highlightbackground=LINE, activebackground=ACCENT,
+                                    activeforeground="#111", font=(FONT, 9, "bold"),
+                                    cursor="hand2", width=7)
+        self.review_btn.pack(side="left", padx=2)
 
     def _build_list(self):
         shell = tk.Frame(self.body, bg=BG)
@@ -334,6 +348,9 @@ class DaFeiYu:
 
     # ---------- 交互 ----------
     def _toggle(self):
+        if getattr(self, "panel", None) is not None:   # 面板打开时先回主视图
+            self._close_panel()
+            return
         if self.collapsed:
             self._expand()
         else:
@@ -362,6 +379,242 @@ class DaFeiYu:
         if st == "done":
             self.selected = self._first_open()
         self._refresh()
+
+    # ---------- 弹出面板 ----------
+    # 不用 Toplevel：主窗是无边框 + 置顶，永远压在普通窗口上面，
+    # 唯一可靠的做法是在同一个窗口里换面板。
+    def _show_panel(self, w, h, builder):
+        self.body.pack_forget()
+        self.panel = tk.Frame(self.root, bg=BG)
+        self.panel.pack(fill="both", expand=True)
+        self._reposition(w, h)
+        builder(self.panel)
+        return self.panel
+
+    def _reposition(self, w, h):
+        """宽度变了要重新贴右边，否则会顶出屏幕右边缘。"""
+        sw = self.root.winfo_screenwidth()
+        sh = self.root.winfo_screenheight()
+        x = max(20, sw - w - 36)
+        y = max(20, min(self.root.winfo_y(), sh - h - 60))
+        self.root.geometry(f"{w}x{h}+{x}+{y}")
+
+    def _close_panel(self):
+        panel = getattr(self, "panel", None)
+        if panel is not None:
+            panel.destroy()
+            self.panel = None
+        self.body.pack(fill="both", expand=True)
+        self._reposition(W, self._target_h())
+
+    def _open_review(self):
+        _, _, short, full, crit, _h = TASK_BY_ID[self.selected]
+        self._show_panel(520, 640, lambda p: self._build_review_panel(p, short, full, crit))
+
+    def _build_review_panel(self, parent, short, full, crit):
+        tk.Label(parent, text=f"AI 批改 · {short}", bg=BG, fg=ACCENT,
+                 font=(FONT, 10, "bold")).pack(anchor="w", padx=14, pady=(12, 2))
+        tk.Label(parent, text="贴汇报 / 推导过程，AI 按这项的验收标准判一次", bg=BG, fg=MUTED,
+                 font=(FONT, 8)).pack(anchor="w", padx=14, pady=(0, 6))
+
+        inp = tk.Text(parent, height=9, bg=CARD, fg=FG, insertbackground=FG, bd=0,
+                      font=(FONT, 9), wrap="word", padx=10, pady=8, highlightthickness=0)
+        inp.pack(fill="x", padx=14)
+        placeholder = ("例：行优先 LOC(i,j) = base + ((i-1)×n + (j-1))×L，"
+                       "因为第 i 行之前有 (i-1) 整行、每行 n 个元素。\n"
+                       "自证：A[1..8][1..10]，LOC(5,7) = 1000 + (4×10+6)×4 = 1184。")
+        inp.insert("1.0", placeholder)
+        inp.config(fg=MUTED)
+
+        def clear_placeholder(_=None):
+            if str(inp.cget("fg")) == MUTED:
+                inp.delete("1.0", "end")
+                inp.config(fg=FG)
+
+        inp.bind("<FocusIn>", clear_placeholder)
+        inp.bind("<Button-1>", clear_placeholder, add="+")
+        inp.focus_set()
+
+        status = tk.Label(parent, text="", bg=BG, fg=MUTED, font=(FONT, 8),
+                          anchor="w", justify="left")
+        status.pack(fill="x", padx=14, pady=(6, 0))
+
+        out = tk.Text(parent, height=12, bg=CARD, fg=DIM, bd=0, font=(FONT, 9), wrap="word",
+                      padx=10, pady=8, highlightthickness=0, state="disabled")
+        out.pack(fill="both", expand=True, padx=14, pady=(6, 0))
+
+        row = tk.Frame(parent, bg=BG)
+        row.pack(fill="x", padx=14, pady=10)
+
+        def done(text, err=None):
+            btn.config(state="normal", text="提交批改")
+            out.config(state="normal")
+            out.delete("1.0", "end")
+            if err:
+                status.config(text="调用失败", fg="#E57373")
+                out.insert("end", err)
+            else:
+                verdict = "🟢" if "🟢" in text else ("🟡" if "🟡" in text else ("🔴" if "🔴" in text else "—"))
+                status.config(text=f"批改完成 {verdict} · 是否过关仍由你决定", fg=OK)
+                out.insert("end", text)
+            out.config(state="disabled")
+
+        def submit():
+            report = "" if str(inp.cget("fg")) == MUTED else inp.get("1.0", "end").strip()
+            if len(report) < 10:
+                status.config(text="汇报太短了。写清你做了什么、怎么验证的。", fg="#E57373")
+                return
+            if not aiclient.is_ready(self.cfg):
+                status.config(text="还没配 API Key。点标题栏的 API 按钮填一个。", fg=DOING)
+                return
+            btn.config(state="disabled", text="批改中…")
+            status.config(text="已发出，等模型回…", fg=DOING)
+
+            def worker():
+                try:
+                    text = aiclient.review(self.cfg, full, crit, report)
+                    self.root.after(0, lambda t=text: done(t))
+                except Exception as e:
+                    self.root.after(0, lambda m=str(e): done(None, m))
+
+            threading.Thread(target=worker, daemon=True).start()
+
+        btn = tk.Button(row, text="提交批改", command=submit, bg=CARD, fg=ACCENT, bd=1,
+                        relief="flat", highlightbackground=LINE, activebackground=ACCENT,
+                        activeforeground="#111", font=(FONT, 9, "bold"), cursor="hand2", width=10)
+        btn.pack(side="left")
+        tk.Button(row, text="返回", command=self._close_panel, bg=CARD, fg=MUTED, bd=1,
+                  relief="flat", highlightbackground=LINE, activebackground=LINE,
+                  activeforeground=FG, font=(FONT, 9), cursor="hand2",
+                  width=8).pack(side="right")
+
+    # ---------- API 设置 ----------
+    def _open_settings(self):
+        self._show_panel(560, 470, self._build_settings_panel)
+
+    def _build_settings_panel(self, parent):
+        fields = {}
+
+        tk.Label(parent, text="API 设置", bg=BG, fg=ACCENT,
+                 font=(FONT, 10, "bold")).pack(anchor="w", padx=16, pady=(12, 2))
+        tk.Label(parent, text="填一次就存在本地 config.json，不会上传到任何地方",
+                 bg=BG, fg=MUTED, font=(FONT, 8)).pack(anchor="w", padx=16, pady=(0, 8))
+
+        form = tk.Frame(parent, bg=BG)
+        form.pack(fill="x", padx=16)
+        form.columnconfigure(1, weight=1)
+
+        def add_row(r, label, key, show=None):
+            tk.Label(form, text=label, bg=BG, fg=DIM, font=(FONT, 9),
+                     anchor="w", width=10).grid(row=r, column=0, sticky="w", pady=5)
+            e = tk.Entry(form, bg=CARD, fg=FG, insertbackground=FG, bd=0, font=(FONT, 9),
+                         highlightthickness=1, highlightbackground=LINE, highlightcolor=ACCENT)
+            if show:
+                e.config(show=show)
+            e.grid(row=r, column=1, sticky="ew", padx=(4, 4), ipady=4)
+            fields[key] = e
+            return e
+
+        pvar = tk.StringVar(value=self.cfg.get("provider") or "deepseek")
+        tk.Label(form, text="服务商", bg=BG, fg=DIM, font=(FONT, 9), anchor="w",
+                 width=10).grid(row=0, column=0, sticky="w", pady=5)
+        style = ttk.Style()
+        try:
+            style.theme_use("clam")          # 只有 clam 主题能改下拉框底色
+            style.configure("Dark.TCombobox", fieldbackground=CARD, background=CARD,
+                            foreground=FG, arrowcolor=FG, bordercolor=LINE,
+                            selectbackground=CARD, selectforeground=FG)
+            style.map("Dark.TCombobox",
+                      fieldbackground=[("readonly", CARD)],
+                      foreground=[("readonly", FG)],
+                      background=[("readonly", CARD)])
+        except Exception:
+            pass
+        combo = ttk.Combobox(form, textvariable=pvar, style="Dark.TCombobox", state="readonly",
+                             values=[f"{k} · {v['name']}" for k, v in aiclient.PROVIDERS.items()],
+                             font=(FONT, 9))
+        combo.grid(row=0, column=1, sticky="ew", padx=(4, 4), pady=5)
+
+        add_row(1, "base_url", "base_url")
+        add_row(2, "model", "model")
+        key_entry = add_row(3, "api_key", "api_key", show="*")
+        add_row(4, "proxy", "proxy")
+
+        for k in ("base_url", "model", "api_key", "proxy"):
+            fields[k].insert(0, str(self.cfg.get(k) or ""))
+
+        tip = tk.Label(parent, text="", bg=BG, fg=MUTED, font=(FONT, 8),
+                       anchor="w", justify="left", wraplength=520)
+        tip.pack(fill="x", padx=16, pady=(10, 0))
+
+        def provider_key():
+            return pvar.get().split(" · ")[0]
+
+        def sync_tip(*_):
+            p = aiclient.PROVIDERS.get(provider_key(), {})
+            tip.config(text=f"申请地址：{p.get('apply') or '自填'}    费用：{p.get('cost') or '—'}")
+
+        def on_provider(*_):
+            p = aiclient.PROVIDERS.get(provider_key(), {})
+            for k in ("base_url", "model"):
+                if p.get(k):
+                    fields[k].delete(0, "end")
+                    fields[k].insert(0, p[k])
+            sync_tip()
+
+        combo.bind("<<ComboboxSelected>>", on_provider)
+        sync_tip()
+
+        status = tk.Label(parent, text="", bg=BG, fg=MUTED, font=(FONT, 8),
+                          anchor="w", justify="left", wraplength=520)
+        status.pack(fill="x", padx=16, pady=(8, 0))
+
+        def collect():
+            return {"provider": provider_key(), "base_url": fields["base_url"].get().strip(),
+                    "model": fields["model"].get().strip(), "api_key": fields["api_key"].get().strip(),
+                    "proxy": fields["proxy"].get().strip()}
+
+        def save():
+            cfg = dict(self.cfg)
+            cfg.update(collect())
+            try:
+                path = aiclient.save_config(APP_DIR, cfg)
+            except Exception as e:
+                status.config(text=f"保存失败：{e}", fg="#E57373")
+                return
+            self.cfg = cfg
+            status.config(text=f"已保存 → {path}", fg=OK)
+
+        def test():
+            cfg = dict(self.cfg)
+            cfg.update(collect())
+            status.config(text="测试中…", fg=DOING)
+
+            def worker():
+                try:
+                    msg = aiclient.test_connection(cfg)
+                    self.root.after(0, lambda: status.config(text=msg, fg=OK))
+                except Exception as e:
+                    self.root.after(0, lambda m=str(e): status.config(text=m, fg="#E57373"))
+            threading.Thread(target=worker, daemon=True).start()
+
+        def toggle_key():
+            key_entry.config(show="" if key_entry.cget("show") else "*")
+
+        row = tk.Frame(parent, bg=BG)
+        row.pack(fill="x", padx=16, pady=(12, 10))
+        for text, cmd, color in (("保存", save, OK), ("测试连接", test, ACCENT)):
+            tk.Button(row, text=text, command=cmd, bg=CARD, fg=color, bd=1, relief="flat",
+                      highlightbackground=LINE, activebackground=color, activeforeground="#111",
+                      font=(FONT, 9, "bold"), cursor="hand2", width=9).pack(side="left", padx=(0, 6))
+        tk.Button(row, text="显示 Key", command=toggle_key, bg=CARD, fg=MUTED, bd=1,
+                  relief="flat", highlightbackground=LINE, activebackground=LINE,
+                  activeforeground=FG, font=(FONT, 9), cursor="hand2",
+                  width=9).pack(side="left")
+        tk.Button(row, text="返回", command=self._close_panel, bg=CARD, fg=MUTED, bd=1,
+                  relief="flat", highlightbackground=LINE, activebackground=LINE,
+                  activeforeground=FG, font=(FONT, 9), cursor="hand2",
+                  width=8).pack(side="right")
 
     # ---------- 渲染 ----------
     def _draw_bar(self):
