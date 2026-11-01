@@ -20,7 +20,7 @@ from pathlib import Path
 import tkinter as tk
 
 
-__version__ = "1.1.1"
+__version__ = "1.1.2"
 
 # 打包成 exe 后 __file__ 指向临时解压目录，配置与进度必须落在 exe 旁边
 APP_DIR = Path(sys.executable).parent if getattr(sys, "frozen", False) else Path(__file__).parent
@@ -494,9 +494,11 @@ class DaFeiYu:
                                      font=(FONT, 9, "bold"), anchor="w", justify="left",
                                      wraplength=W - 44)
         self.detail_title.pack(fill="x", padx=10, pady=(8, 1))
-        self.detail_meta = tk.Label(wrap, text="", bg=CARD, fg="#6E767D",
-                                    font=(FONT, 8), anchor="w", justify="left")
+        self.detail_meta = tk.Label(wrap, text="", bg=CARD, fg="#8A939B",
+                                    font=(FONT, 8), anchor="w", justify="left",
+                                    cursor="hand2")
         self.detail_meta.pack(fill="x", padx=10, pady=(0, 4))
+        self.detail_meta.bind("<Button-1>", lambda e: self._open_sessions())
         self.detail_text = tk.Text(wrap, height=5, bg=CARD, fg=DIM, bd=0,
                                    font=(FONT, 8), wrap="word", cursor="arrow",
                                    highlightthickness=0, padx=0, pady=0,
@@ -669,6 +671,57 @@ class DaFeiYu:
             self.root.iconify()
         except Exception:
             pass
+
+    # ---------- 查看学习记录 ----------
+    def _open_sessions(self):
+        tid = self.selected
+        _, _, short, full, crit, hours = TASK_BY_ID[tid]
+        self._show_panel(540, 640, lambda p: self._build_sessions_panel(p, tid, short, full, hours))
+
+    def _build_sessions_panel(self, parent, tid, short, full, budget):
+        rows = [x for x in self.sessions if x.get("task") == tid]
+        total = sum(int(x.get("minutes") or 0) for x in rows)
+
+        tk.Label(parent, text=f"学习记录 · {short}", bg=BG, fg=ACCENT,
+                 font=(FONT, 10, "bold")).pack(anchor="w", padx=16, pady=(12, 2))
+        tk.Label(parent,
+                 text=f"共 {len(rows)} 次 · 累计 {total // 60} 小时 {total % 60} 分 · 预算 {budget:g}h",
+                 bg=BG, fg=MUTED, font=(FONT, 8)).pack(anchor="w", padx=16, pady=(0, 8))
+
+        bar = tk.Canvas(parent, height=6, bg=CARD, highlightthickness=0)
+        bar.pack(fill="x", padx=16, pady=(0, 10))
+        if budget > 0:
+            pct = min(1.0, (total / 60) / budget)
+
+        def draw(*_):
+            w = max(bar.winfo_width(), 1)
+            bar.delete("all")
+            bar.create_rectangle(0, 0, w, 6, fill=CARD, width=0)
+            if budget > 0:
+                bar.create_rectangle(0, 0, w * min(1.0, (total / 60) / budget), 6, fill=ACCENT, width=0)
+
+        bar.bind("<Configure>", draw)
+
+        body = tk.Text(parent, bg=CARD, fg="#C9CFD6", bd=0, font=(FONT, 9), wrap="word",
+                       padx=12, pady=10, highlightthickness=0, state="normal")
+        body.pack(fill="both", expand=True, padx=16, pady=(0, 8))
+
+        if not rows:
+            body.insert("end", "还没有记录。\n\n点「▶ 计时」开始学，结束后填两行，这里就会出现。")
+        else:
+            for x in reversed(rows):
+                body.insert("end", f'{x.get("end") or "—"}    {x.get("minutes")} 分钟\n')
+                body.insert("end", f'  {x.get("note") or "（没写内容）"}\n\n')
+        body.config(state="disabled")
+
+        row = tk.Frame(parent, bg=BG)
+        row.pack(fill="x", padx=16, pady=(0, 12))
+        tk.Button(row, text="返回", command=self._close_panel, bg=CARD, fg=MUTED, bd=1,
+                  relief="flat", highlightbackground=LINE, activebackground=LINE,
+                  activeforeground=FG, font=(FONT, 9), cursor="hand2",
+                  width=8).pack(side="right")
+        tk.Label(row, text=f"存在 dafeiyu_state.json 的 sessions 里", bg=BG, fg="#5C646B",
+                 font=(FONT, 7)).pack(side="left")
 
     # ---------- 语音输入 ----------
     def _listen_once(self, on_text):
@@ -996,7 +1049,7 @@ class DaFeiYu:
         spent = self._spent_minutes(self.selected) / 60
         cnt = sum(1 for s in self.sessions if s.get("task") == self.selected)
         self.detail_meta.config(
-            text=f"已投入 {spent:.1f}h / 预算 {hours:g}h · {cnt} 次学习记录" if cnt
+            text=f"已投入 {spent:.1f}h / 预算 {hours:g}h · {cnt} 次记录 · 点这里查看" if cnt
             else f"还没记录过学习过程 · 预算 {hours:g}h · 点「▶ 计时」开始")
         self.detail_text.config(state="normal")
         self.detail_text.delete("1.0", "end")
