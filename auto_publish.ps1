@@ -1,58 +1,82 @@
-# 一键发布到 GitHub：检测登录 -> 建仓库（或复用） -> 推送 -> 补描述/topics -> 建 Release 挂 exe
-# 用法：.\auto_publish.ps1
-# 前置：gh 已登录（gh auth login --web 走过一次浏览器授权）
+# 一键发版：构建 exe -> 提交 -> 打 tag -> SSH 推送 -> 建 Release 挂 exe
+#
+# 用法：
+#   .\auto_publish.ps1                 用当前 __version__ 发版
+#   .\auto_publish.ps1 -SkipBuild      不重新打包，直接推
+#
+# 前提：git remote 走 SSH（git@github.com:...），并且该 key 已作为 deploy key 加到仓库。
+# HTTPS 那条路在本机不可靠：代理端口会变，而且分流规则常挡住 github.com 主站。
+
+param(
+    [switch]$SkipBuild
+)
 
 $ErrorActionPreference = "Stop"
 Set-Location -LiteralPath $PSScriptRoot
 
-$gh = "C:\Program Files\GitHub CLI\gh.exe"
-if (-not (Test-Path $gh)) { $gh = "gh" }
-
 $User = "wenzi4055"
 $Repo = "DaFeiYu-Study-Assistant"
-$Desc = "大肥鱼监工器 · 三科考试进度悬浮窗：三态打卡 + 硬性验收标准常驻，单文件零依赖"
 
-# 1. 登录检查
-& $gh auth status *> $null
-if ($LASTEXITCODE -ne 0) {
-    Write-Host "还没登录 GitHub。先跑这条，浏览器里完成授权：" -ForegroundColor Yellow
-    Write-Host "  & '$gh' auth login --web --hostname github.com --git-protocol https"
+# 1. 版本号直接从源码读，避免文档和代码不一致
+$version = (Select-String -Path "dafeiyu.py" -Pattern '^__version__\s*=\s*"([^"]+)"').Matches[0].Groups[1].Value
+if (-not $version) { Write-Error "读不到 dafeiyu.py 里的 __version__"; exit 1 }
+Write-Host "版本: $version" -ForegroundColor Cyan
+
+# 2. 构建
+if (-not $SkipBuild) {
+    Get-Process DaFeiYu -ErrorAction SilentlyContinue | Stop-Process -Force
+    Start-Sleep -Milliseconds 400
+    python -m PyInstaller --noconfirm --clean --onefile --noconsole --name DaFeiYu dafeiyu.py 2>&1 | Select-Object -Last 1
+    Remove-Item DaFeiYu.spec -ErrorAction SilentlyContinue
+    if (-not (Test-Path "dist\DaFeiYu.exe")) { Write-Error "打包失败"; exit 1 }
+    Write-Host "打包完成: dist\DaFeiYu.exe" -ForegroundColor Green
+}
+
+# 3. 提交 + tag + 推送（SSH，不过代理）
+$dirty = (git status --porcelain)
+if ($dirty) {
+    Write-Host "有未提交改动：" -ForegroundColor Yellow
+    $dirty
+    Write-Host "先自己按规范拆好提交，再跑本脚本。" -ForegroundColor Yellow
     exit 1
 }
-Write-Host "登录状态: OK" -ForegroundColor Green
+git tag -f "v$version" -m "v$version"
+git push origin master
+git push origin "v$version" --force
+Write-Host "已推送 master 与 v$version" -ForegroundColor Green
 
-# 2. 仓库是否存在
-& $gh repo view "$User/$Repo" *> $null
-$exists = ($LASTEXITCODE -eq 0)
-
-if (-not $exists) {
-    Write-Host "仓库不存在，创建中..." -ForegroundColor Cyan
-    & $gh repo create $Repo --public --description $Desc --source . --remote origin --push
-    if ($LASTEXITCODE -ne 0) { Write-Error "创建仓库失败，看上面的 gh 输出"; exit 1 }
-} else {
-    Write-Host "仓库已存在，直接推送..." -ForegroundColor Cyan
-    git remote remove origin 2>$null | Out-Null
-    git remote add origin "https://github.com/$User/$Repo.git"
-    git push -u origin master
-    if ($LASTEXITCODE -ne 0) { Write-Error "推送失败"; exit 1 }
-}
-
-# 3. 补仓库信息
-& $gh repo edit "$User/$Repo" --description $Desc `
-    --add-topic study-tools,exam,productivity,tkinter,python,desktop-widget,self-discipline 2>$null | Out-Null
-
-# 4. Release（exe 挂附件，README 里的下载链接就有着落了）
-$exe = Join-Path $PSScriptRoot "dist\DaFeiYu.exe"
-if (Test-Path $exe) {
-    & $gh release view "v0.2" --repo "$User/$Repo" *> $null
-    if ($LASTEXITCODE -ne 0) {
-        & $gh release create "v0.2" $exe `
-            --repo "$User/$Repo" `
-            --title "v0.2 · 配置驱动 + exe 打包" `
-            --notes "tasks.json 配置驱动（任意任务池/任意监督对象）、单文件 exe 打包、通用监督人格模板、DPI 感知修复。下载 DaFeiYu.exe 双击即用，无需安装 Python。"
+# 4. 找可用代理（端口每个月都可能变，所以自动探测）
+function Find-Proxy {
+    foreach ($p in 7893, 7890, 7897, 12000, 10809, 10808, 1080) {
+        try {
+            $r = Invoke-WebRequest -Uri "https://api.github.com" -Headers @{ "User-Agent" = "dafeiyu" } `
+                 -Proxy "http://127.0.0.1:$p" -TimeoutSec 6
+            if ($r.StatusCode -eq 200) { return "http://127.0.0.1:$p" }
+        } catch { }
     }
+    return ""
 }
+$px = Find-Proxy
+if (-not $px) { Write-Error "找不到可用代理，Release 这步跳过。先把代理开起来再重跑。"; exit 1 }
+Write-Host "代理: $px" -ForegroundColor Cyan
+
+# 5. 用凭据里的 token 调 API 建 Release 并上传 exe
+$cred = @("protocol=https", "host=github.com", "") | git credential fill 2>$null
+$token = ($cred | Where-Object { $_ -like "password=*" }) -replace "^password=", ""
+if (-not $token) { Write-Error "取不到 token，Release 跳过"; exit 1 }
+$h = @{ "Authorization" = "token $token"; "User-Agent" = "dafeiyu"; "Accept" = "application/vnd.github+json" }
+$base = "https://api.github.com/repos/$User/$Repo"
+
+$payload = @{ tag_name = "v$version"; name = "v$version"; draft = $false; prerelease = $false } | ConvertTo-Json -Compress
+$bytes = [System.Text.Encoding]::UTF8.GetBytes($payload)
+$rel = Invoke-RestMethod -Uri "$base/releases" -Method Post -Headers $h -Body $bytes `
+       -ContentType "application/json; charset=utf-8" -Proxy $px -TimeoutSec 60
+
+$exe = [System.IO.File]::ReadAllBytes("dist\DaFeiYu.exe")
+$up = "https://uploads.github.com/repos/$User/$Repo/releases/$($rel.id)/assets?name=DaFeiYu.exe"
+$a = Invoke-RestMethod -Uri $up -Method Post -Headers $h -Body $exe `
+     -ContentType "application/octet-stream" -Proxy $px -TimeoutSec 300
 
 Write-Host ""
-Write-Host "完成: https://github.com/$User/$Repo" -ForegroundColor Green
-& $gh repo view "$User/$Repo" --web
+Write-Host "发版完成: $($rel.html_url)" -ForegroundColor Green
+Write-Host "下载: $($a.browser_download_url)"
