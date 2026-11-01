@@ -1,6 +1,6 @@
 # DaFeiYu · 大肥鱼监工器
 
-**当前版本 v0.6.0** · [变更记录](CHANGELOG.md) · [MIT](LICENSE) · Python 3.8+
+**当前版本 v0.7.0** · [变更记录](CHANGELOG.md) · [MIT](LICENSE) · Python 3.8+
 
 一个只管三件事的桌面悬浮窗：**你还剩几项没做、下一项是什么、怎么才算过关。**
 
@@ -54,9 +54,11 @@
 
 **AI 批改会读这些记录。** 最近 3 次会话会一起发过去，所以它能看出「你只看了视频、一次练习都没做」这种模式 —— 光看汇报文字是看不出来的。
 
-**附件直接上传。** 手写推导拍照就能发：点 `＋ 添加` 选图片（png/jpg/webp/bmp/gif）或代码文件（txt/py/c/cpp/java/cs/json/csv）。图片走多模态，文本直接读入。
+**附件直接上传，或者按 Ctrl+V 粘。** 手写推导拍完截图，在面板里直接 `Ctrl+V` 就贴上来了——不用先存文件再找路径。也可以用 `＋ 添加` 选图片（png/jpg/webp/bmp/gif）或代码文件（txt/py/c/cpp/java/cs/json/csv）。剪贴板里是文件时也会自动识别。
 
-需要一个能读图的模型：`qwen-vl-max`、`glm-4v-flash`、`gpt-4o-mini` 都行。程序会先判断当前模型是否支持视觉，不支持就明确告诉你换哪个，而不是发出去白等一次超时。
+Windows 上剪贴板给的是 `CF_DIB` 原始位图而不是 PNG，所以程序自己做了 DIB → PPM → PNG 的转换，纯标准库，不引入 Pillow。macOS / Linux 只能走文件选择。
+
+需要一个能读图的模型：`qwen-vl-max`、`glm-4v-flash`（免费）、`gpt-4o-mini` 都行。程序会先判断当前模型是否支持视觉，不支持就明确告诉你换哪个，而不是发出去白等一次超时。
 
 ## AI 批改（可选功能）
 
@@ -177,6 +179,7 @@ python dafeiyu.py
 ```
 dafeiyu.py                   主程序（界面 + 记账），单文件
 aiclient.py                  AI 批改客户端（OpenAI 兼容，零依赖）
+clipimg.py                   Windows 剪贴板取图（DIB → PNG，零依赖）
 build.ps1                    一键打包 exe
 tasks.json                   你的任务池（首次运行自动生成，不进版本库）
 tasks.template.json          任务池骨架
