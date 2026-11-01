@@ -13,17 +13,13 @@
 
 import json
 import sys
-import threading
 from datetime import datetime
 from pathlib import Path
 
 import tkinter as tk
-from tkinter import ttk, filedialog
 
-import aiclient
-import clipimg
 
-__version__ = "0.9.1"
+__version__ = "1.0.0"
 
 # 打包成 exe 后 __file__ 指向临时解压目录，配置与进度必须落在 exe 旁边
 APP_DIR = Path(sys.executable).parent if getattr(sys, "frozen", False) else Path(__file__).parent
@@ -228,7 +224,6 @@ class DaFeiYu:
         self.timer_task = None
         self.timer_job = None
         self.state = self._load()
-        self.cfg = aiclient.load_config(APP_DIR)
         self.collapsed = False
         self.selected = self._first_open()
 
@@ -289,9 +284,11 @@ class DaFeiYu:
         except Exception:
             start = datetime.now().date()
         mpd = max(10, int(MINUTES_PER_DAY or 60))
-        total_min = sum(h * 60 for *_, h in TASKS if h)
+        # 日历只安排还没过关的：已过关的不再占天数
+        todo = [t for t in TASKS if t[5] and self.state.get(t[0], {}).get("state") != "done"]
+        total_min = sum(t[5] * 60 for t in todo)
         if total_min <= 0:
-            return 1, 1, (TASKS[0] if TASKS else None), mpd, 0
+            return 1, 1, None, mpd, 0
         total_days = max(1, -(-int(total_min) // mpd))       # 向上取整
         day_no = (datetime.now().date() - start).days + 1
         if day_no < 1:
@@ -301,12 +298,9 @@ class DaFeiYu:
 
         # 定位今天配额落在哪一项
         acc = 0
-        pick = TASKS[0] if TASKS else None
-        for t in TASKS:
-            h = t[5]
-            if not h:
-                continue
-            tmin = h * 60
+        pick = todo[0] if todo else None
+        for t in todo:
+            tmin = t[5] * 60
             if acc + tmin > quota_min - mpd:
                 pick = t
                 break
@@ -398,9 +392,6 @@ class DaFeiYu:
         self.fold_btn.pack(side="right", padx=2)
         tk.Label(bar, text=f"v{__version__}", bg="#141618", fg="#4A5056",
                  font=(FONT, 7)).pack(side="right", padx=(0, 6))
-        tk.Button(bar, text="API", command=self._open_settings, bg="#141618", fg=ACCENT if aiclient.is_ready(self.cfg) else MUTED,
-                  bd=0, activebackground=LINE, activeforeground=FG,
-                  font=(FONT, 8, "bold"), cursor="hand2").pack(side="right", padx=(0, 2))
         bar.bind("<ButtonPress-1>", self._drag_start)
         bar.bind("<B1-Motion>", self._drag)
         bar.bind("<Double-Button-1>", lambda e: self._toggle())
@@ -465,12 +456,6 @@ class DaFeiYu:
                                    activeforeground="#111", font=(FONT, 9, "bold"),
                                    cursor="hand2", width=6)
         self.timer_btn.pack(side="left", padx=2)
-        self.review_btn = tk.Button(btns, text="AI 批改", command=self._open_review,
-                                    bg=CARD, fg=ACCENT, bd=1, relief="flat",
-                                    highlightbackground=LINE, activebackground=ACCENT,
-                                    activeforeground="#111", font=(FONT, 9, "bold"),
-                                    cursor="hand2", width=7)
-        self.review_btn.pack(side="left", padx=2)
 
     def _build_list(self):
         shell = tk.Frame(self.body, bg=BG)
@@ -735,45 +720,12 @@ class DaFeiYu:
                   activeforeground=FG, font=(FONT, 9), cursor="hand2",
                   width=10).pack(side="left", padx=(8, 0))
 
-    # ---------- 语音输入 ----------
-    def _listen_once(self, on_text):
-        """调 Windows 离线语音引擎识别一句。on_text 收到文本，空串表示没听清。"""
-        if sys.platform != "win32":
-            on_text("")
-            return
-        ps = (
-            "[Console]::OutputEncoding=[System.Text.Encoding]::UTF8;"
-            "Add-Type -AssemblyName System.Speech;"
-            "$r=New-Object System.Speech.Recognition.SpeechRecognitionEngine;"
-            "$r.SetInputToDefaultAudioDevice();"
-            "$r.LoadGrammar((New-Object System.Speech.Recognition.DictationGrammar));"
-            "$r.InitialSilenceTimeout=[TimeSpan]::FromSeconds(6);"
-            "$r.EndSilenceTimeout=[TimeSpan]::FromSeconds(1.5);"
-            "$res=$r.Recognize();"
-            "if($res){[Console]::Out.Write($res.Text)}"
-        )
-
-        def worker():
-            txt = ""
-            try:
-                import subprocess
-                out = subprocess.run(
-                    ["powershell", "-NoProfile", "-STA", "-Command", ps],
-                    capture_output=True, timeout=40,
-                    creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
-                txt = (out.stdout or b"").decode("utf-8", "replace").strip()
-            except Exception:
-                txt = ""
-            self.root.after(0, lambda t=txt: on_text(t))
-
-        threading.Thread(target=worker, daemon=True).start()
-
     # ---------- 计划设置 ----------
     def _open_plan(self):
-        self._show_panel(500, 545, self._build_plan_panel)
+        self._show_panel(460, 370, self._build_plan_panel)
 
     def _write_plan(self):
-        global PLAN_START, PLAN_DEADLINE, MINUTES_PER_DAY, LEAVE_DAYS
+        global PLAN_START, PLAN_DEADLINE, MINUTES_PER_DAY
         try:
             raw = json.loads(TASKS_FILE.read_text(encoding="utf-8"))
         except Exception:
@@ -781,66 +733,43 @@ class DaFeiYu:
         if not isinstance(raw, dict):
             raw = {}
         raw["plan"] = {"start": PLAN_START, "deadline": PLAN_DEADLINE,
-                       "minutes_per_day": MINUTES_PER_DAY,
-                       "leave_days": sorted(set(LEAVE_DAYS))}
+                       "minutes_per_day": MINUTES_PER_DAY}
         TASKS_FILE.write_text(json.dumps(raw, ensure_ascii=False, indent=2), encoding="utf-8")
 
     def _build_plan_panel(self, parent):
-        global PLAN_DEADLINE, MINUTES_PER_DAY, LEAVE_DAYS
-        today = datetime.now().strftime("%Y-%m-%d")
+        global PLAN_DEADLINE, MINUTES_PER_DAY
         today_d = datetime.now().date()
 
         tk.Label(parent, text="计划设置", bg=BG, fg=ACCENT,
-                 font=(FONT, 10, "bold")).pack(anchor="w", padx=16, pady=(12, 2))
-        tk.Label(parent, text="改完点保存。今天想多做就调高每日配额，做不动就请假——请假的日子不算欠账。",
-                 bg=BG, fg=MUTED, font=(FONT, 8), wraplength=460,
-                 justify="left").pack(anchor="w", padx=16, pady=(0, 10))
+                 font=(FONT, 10, "bold")).pack(anchor="w", padx=16, pady=(14, 2))
+        tk.Label(parent, text="只填两个数：每天花多久、什么时候考。",
+                 bg=BG, fg=MUTED, font=(FONT, 8)).pack(anchor="w", padx=16, pady=(0, 14))
 
-        # 每日配额
         row1 = tk.Frame(parent, bg=BG)
         row1.pack(fill="x", padx=16)
         tk.Label(row1, text="每天", bg=BG, fg=DIM, font=(FONT, 9), width=5,
                  anchor="w").pack(side="left")
         mpd_var = tk.StringVar(value=str(MINUTES_PER_DAY))
-        mpd_entry = tk.Entry(row1, textvariable=mpd_var, bg=CARD, fg=FG, insertbackground=FG,
-                             bd=0, font=(FONT, 9), highlightthickness=1,
-                             highlightbackground=LINE, highlightcolor=ACCENT, width=6)
-        mpd_entry.pack(side="left", ipady=4)
-        tk.Label(row1, text="分钟", bg=BG, fg=MUTED, font=(FONT, 8)).pack(side="left", padx=(6, 10))
+        tk.Entry(row1, textvariable=mpd_var, bg=CARD, fg=FG, insertbackground=FG,
+                 bd=0, font=(FONT, 9), highlightthickness=1, highlightbackground=LINE,
+                 highlightcolor=ACCENT, width=6).pack(side="left", ipady=4)
+        tk.Label(row1, text="分钟", bg=BG, fg=MUTED,
+                 font=(FONT, 8)).pack(side="left", padx=(6, 0))
 
-        def set_mpd(v):
-            mpd_var.set(str(v))
-
-        for v in (30, 45, 60, 90, 120):
-            tk.Button(row1, text=str(v), command=lambda x=v: set_mpd(x), bg=CARD, fg=DIM,
-                      bd=1, relief="flat", highlightbackground=LINE, activebackground=ACCENT,
-                      activeforeground="#111", font=(FONT, 8), cursor="hand2",
-                      width=3).pack(side="left", padx=1)
-
-        # 目标完成日
         row2 = tk.Frame(parent, bg=BG)
         row2.pack(fill="x", padx=16, pady=(10, 0))
         tk.Label(row2, text="目标日", bg=BG, fg=DIM, font=(FONT, 9), width=5,
                  anchor="w").pack(side="left")
         dl_var = tk.StringVar(value=PLAN_DEADLINE or "")
-        dl_entry = tk.Entry(row2, textvariable=dl_var, bg=CARD, fg=FG, insertbackground=FG,
-                            bd=0, font=(FONT, 9), highlightthickness=1,
-                            highlightbackground=LINE, highlightcolor=ACCENT, width=14)
-        dl_entry.pack(side="left", ipady=4)
-        tk.Label(row2, text="格式 2027-05-22", bg=BG, fg=MUTED,
+        tk.Entry(row2, textvariable=dl_var, bg=CARD, fg=FG, insertbackground=FG,
+                 bd=0, font=(FONT, 9), highlightthickness=1, highlightbackground=LINE,
+                 highlightcolor=ACCENT, width=14).pack(side="left", ipady=4)
+        tk.Label(row2, text="如 2027-05-22", bg=BG, fg=MUTED,
                  font=(FONT, 8)).pack(side="left", padx=(8, 0))
 
-        # 请假
-        row3 = tk.Frame(parent, bg=BG)
-        row3.pack(fill="x", padx=16, pady=(10, 0))
-        tk.Label(row3, text="请假", bg=BG, fg=DIM, font=(FONT, 9), width=5,
-                 anchor="w").pack(side="left")
-        leave_var = tk.Label(row3, text="", bg=BG, fg=DOING, font=(FONT, 8))
-        leave_var.pack(side="left")
-
-        tip = tk.Label(parent, text="", bg=BG, fg=DIM, font=(FONT, 8), wraplength=460,
-                       justify="left", anchor="w")
-        tip.pack(anchor="w", padx=16, pady=(10, 0))
+        tip = tk.Label(parent, text="", bg=BG, fg=DIM, font=(FONT, 8),
+                       wraplength=420, justify="left", anchor="w")
+        tip.pack(anchor="w", padx=16, pady=(16, 0))
 
         def read_vals():
             try:
@@ -863,62 +792,29 @@ class DaFeiYu:
             remain = sum(t[5] * 60 for t in TASKS if t[5]
                          and self.state.get(t[0], {}).get("state") != "done")
             if not dl:
-                tip.config(text=f"没设目标日。剩余 {remain/60:.0f} 小时，按每天 {mpd} 分钟约 "
-                                f"{-(-int(remain)//mpd)} 天完成。", fg=MUTED)
+                tip.config(text=f"没设目标日。剩 {remain/60:.0f} 小时，"
+                                f"按每天 {mpd} 分钟约 {-(-int(remain)//mpd)} 天完成。", fg=MUTED)
                 return
             deadline = datetime.strptime(dl, "%Y-%m-%d").date()
-            if deadline < today_d:
+            total = (deadline - today_d).days + 1
+            if total <= 0:
                 tip.config(text="目标日已经过去了。", fg="#E57373")
                 return
-            total = (deadline - today_d).days + 1
-            leave_n = sum(1 for d in LEAVE_DAYS
-                          if today_d <= datetime.strptime(d, "%Y-%m-%d").date() <= deadline)
-            work = max(1, total - leave_n)
-            need = remain / work
-            ok = "✓ 来得及" if need <= mpd else f"⚠ 差 {need - mpd:.0f} 分钟/天"
-            tip.config(text=f"剩 {total} 天，扣除请假 {leave_n} 天 → 实际 {work} 个学习日。\n"
-                            f"还剩 {remain/60:.0f} 小时，需 {need:.0f} 分钟/天。{ok}",
+            need = remain / total
+            ok = "✓ 来得及" if need <= mpd else "⚠ 不够"
+            tip.config(text=f"剩 {total} 天，还剩 {remain/60:.0f} 小时。\n"
+                            f"需要 {need:.0f} 分钟/天，你设的是 {mpd} 分钟。{ok}",
                        fg=OK if need <= mpd else "#E57373")
 
-        def refresh_leave():
-            today_in = today in LEAVE_DAYS
-            for w in row3.winfo_children()[2:]:
-                w.destroy()
-            tk.Button(row3, text=("取消今天请假" if today_in else "今天请假"),
-                      command=lambda: toggle_today(), bg=CARD,
-                      fg=(MUTED if today_in else DOING), bd=1, relief="flat",
-                      highlightbackground=LINE, activebackground=LINE,
-                      activeforeground=FG, font=(FONT, 8), cursor="hand2",
-                      width=12).pack(side="left", padx=(0, 6))
-            for d in sorted(LEAVE_DAYS):
-                tk.Button(row3, text=f"{d} ✕", command=lambda x=d: drop_leave(x), bg=CARD,
-                          fg=MUTED, bd=0, relief="flat", highlightbackground=LINE,
-                          activebackground="#8B3A3A", activeforeground="white",
-                          font=(FONT, 7), cursor="hand2").pack(side="left", padx=1)
-            preview()
-
-        def toggle_today():
-            if today in LEAVE_DAYS:
-                LEAVE_DAYS.remove(today)
-            else:
-                LEAVE_DAYS.append(today)
-            refresh_leave()
-
-        def drop_leave(d):
-            if d in LEAVE_DAYS:
-                LEAVE_DAYS.remove(d)
-            refresh_leave()
-
-        # 绑变量而不是按键：粘贴、自动填充也能触发预览
         mpd_var.trace_add("write", lambda *_: preview())
         dl_var.trace_add("write", lambda *_: preview())
-        refresh_leave()
+        preview()
 
         status = tk.Label(parent, text="", bg=BG, fg=MUTED, font=(FONT, 8), anchor="w")
-        status.pack(fill="x", padx=16, pady=(8, 0))
+        status.pack(fill="x", padx=16, pady=(10, 0))
 
         row = tk.Frame(parent, bg=BG)
-        row.pack(fill="x", padx=16, pady=10)
+        row.pack(fill="x", padx=16, pady=12)
 
         def save():
             mpd, dl, err = read_vals()
@@ -927,7 +823,6 @@ class DaFeiYu:
                 return
             MINUTES_PER_DAY, PLAN_DEADLINE = mpd, dl
             self._write_plan()
-            status.config(text="已保存", fg=OK)
             self._close_panel()
             self._refresh()
 
@@ -939,329 +834,6 @@ class DaFeiYu:
                   activeforeground=FG, font=(FONT, 9), cursor="hand2",
                   width=8).pack(side="right")
 
-    def _open_review(self):
-        _, _, short, full, crit, _h = TASK_BY_ID[self.selected]
-        self._show_panel(520, 700, lambda p: self._build_review_panel(p, short, full, crit))
-
-    def _build_review_panel(self, parent, short, full, crit):
-        tk.Label(parent, text=f"AI 批改 · {short}", bg=BG, fg=ACCENT,
-                 font=(FONT, 10, "bold")).pack(anchor="w", padx=14, pady=(12, 2))
-        tk.Label(parent, text="贴汇报 / 推导过程，AI 按这项的验收标准判一次", bg=BG, fg=MUTED,
-                 font=(FONT, 8)).pack(anchor="w", padx=14, pady=(0, 6))
-
-        inp = tk.Text(parent, height=9, bg=CARD, fg=FG, insertbackground=FG, bd=0,
-                      font=(FONT, 9), wrap="word", padx=10, pady=8, highlightthickness=0)
-        inp.pack(fill="x", padx=14)
-        placeholder = ("例：行优先 LOC(i,j) = base + ((i-1)×n + (j-1))×L，"
-                       "因为第 i 行之前有 (i-1) 整行、每行 n 个元素。\n"
-                       "自证：A[1..8][1..10]，LOC(5,7) = 1000 + (4×10+6)×4 = 1184。")
-        inp.insert("1.0", placeholder)
-        inp.config(fg=MUTED)
-
-        def clear_placeholder(_=None):
-            if str(inp.cget("fg")) == MUTED:
-                inp.delete("1.0", "end")
-                inp.config(fg=FG)
-
-        inp.bind("<FocusIn>", clear_placeholder)
-        inp.bind("<Button-1>", clear_placeholder, add="+")
-
-        picked = []          # {"kind":"image","b64","mime","name"} 或 {"kind":"file","path"}
-
-        status = tk.Label(parent, text="", bg=BG, fg=MUTED, font=(FONT, 8),
-                          anchor="w", justify="left", wraplength=470)
-        status.pack(fill="x", padx=14, pady=(6, 0))
-
-        file_row = tk.Frame(parent, bg=BG)
-        file_row.pack(fill="x", padx=14, pady=(6, 0))
-        file_label = tk.Label(file_row, text="截图后 Ctrl+V 粘图 · 也可用语音说你的推导",
-                              bg=BG, fg=MUTED, font=(FONT, 8), anchor="w",
-                              justify="left", wraplength=280)
-        file_label.pack(side="left", fill="x", expand=True)
-
-        def start_speech():
-            speak_btn.config(state="disabled", text="听…")
-            status.config(text="正在听，说完停顿一下会自动结束（第一次会要麦克风权限）", fg=DOING)
-
-            def got(txt):
-                speak_btn.config(state="normal", text="语音输入")
-                if not txt:
-                    status.config(text="没听清。靠近麦克风再说一次，或按 Win+H 用系统语音输入",
-                                  fg="#E57373")
-                    return
-                clear_placeholder()
-                cur = inp.get("1.0", "end").strip()
-                inp.insert("end", ("\n" if cur else "") + txt)
-                inp.see("end")
-                status.config(text=f"听写：{txt[:50]}", fg=OK)
-
-            self._listen_once(got)
-
-        speak_btn = tk.Button(file_row, text="语音输入", command=start_speech, bg=CARD,
-                              fg="#BA9BF2", bd=1, relief="flat", highlightbackground=LINE,
-                              activebackground="#BA9BF2", activeforeground="#111",
-                              font=(FONT, 8, "bold"), cursor="hand2", width=9)
-        speak_btn.pack(side="left", padx=(0, 6), before=file_label)
-
-        def refresh_label():
-            if not picked:
-                file_label.config(text="截图后 Ctrl+V 粘图 · 也可用语音说你的推导", fg=MUTED)
-                return
-            imgs = sum(1 for x in picked if x["kind"] == "image")
-            parts = []
-            if imgs:
-                parts.append(f"{imgs} 张图")
-            files = [x["path"] for x in picked if x["kind"] == "file"]
-            if files:
-                shown = "、".join(Path(p).name for p in files[:2])
-                parts.append(shown + (f" 等 {len(files)} 个文件" if len(files) > 2 else ""))
-            file_label.config(text="已选：" + "、".join(parts), fg=ACCENT)
-
-        def pick_files():
-            paths = filedialog.askopenfilenames(
-                parent=parent, title="选图片或文本文件",
-                filetypes=[("图片", "*.png *.jpg *.jpeg *.webp *.bmp"),
-                           ("文本 / 代码", "*.txt *.md *.py *.c *.cpp *.h *.java *.cs *.json *.csv"),
-                           ("全部文件", "*.*")])
-            for p in paths:
-                if not any(x.get("path") == p for x in picked):
-                    picked.append({"kind": "file", "path": p})
-            refresh_label()
-
-        def paste(_=None):
-            """优先按图片粘；剪贴板里没有图就放行，走正常文本粘贴。"""
-            clear_placeholder()
-            try:
-                img = clipimg.grab_image(self.root)
-            except Exception as e:
-                status.config(text=f"读剪贴板失败：{e}", fg="#E57373")
-                return None
-            if img:
-                picked.append({"kind": "image", "b64": img["b64"],
-                               "mime": img["mime"], "name": img["name"]})
-                refresh_label()
-                status.config(text=f"已粘入剪贴板图片（{img['bytes'] // 1024} KB）", fg=OK)
-                return "break"
-            try:
-                files = clipimg.clipboard_files()
-            except Exception:
-                files = []
-            if files:
-                added = 0
-                for p in files:
-                    if not any(x.get("path") == p for x in picked):
-                        picked.append({"kind": "file", "path": p})
-                        added += 1
-                refresh_label()
-                if added:
-                    status.config(text=f"已粘入 {added} 个文件", fg=OK)
-                    return "break"
-            return None
-
-        tk.Button(file_row, text="＋ 添加", command=pick_files, bg=CARD, fg=ACCENT, bd=1,
-                  relief="flat", highlightbackground=LINE, activebackground=ACCENT,
-                  activeforeground="#111", font=(FONT, 8, "bold"), cursor="hand2",
-                  width=7).pack(side="right")
-
-        inp.bind("<Control-v>", paste)
-        inp.bind("<Control-V>", paste)
-
-        out = tk.Text(parent, height=11, bg=CARD, fg=DIM, bd=0, font=(FONT, 9), wrap="word",
-                      padx=10, pady=8, highlightthickness=0, state="disabled")
-        out.pack(fill="both", expand=True, padx=14, pady=(6, 0))
-
-        row = tk.Frame(parent, bg=BG)
-        row.pack(fill="x", padx=14, pady=10)
-
-        def done(text, err=None):
-            btn.config(state="normal", text="提交批改")
-            out.config(state="normal")
-            out.delete("1.0", "end")
-            if err:
-                status.config(text="调用失败", fg="#E57373")
-                out.insert("end", err)
-            else:
-                verdict = "🟢" if "🟢" in text else ("🟡" if "🟡" in text else ("🔴" if "🔴" in text else "—"))
-                status.config(text=f"批改完成 {verdict} · 是否过关仍由你决定", fg=OK)
-                out.insert("end", text)
-            out.config(state="disabled")
-
-        def submit():
-            report = "" if str(inp.cget("fg")) == MUTED else inp.get("1.0", "end").strip()
-            if len(report) < 10 and not picked:
-                status.config(text="汇报太短了。写清过程，或者加一张手写推导的照片。", fg="#E57373")
-                return
-            if not aiclient.is_ready(self.cfg):
-                status.config(text="还没配 API Key。点标题栏的 API 按钮填一个。", fg=DOING)
-                return
-
-            images, texts = [], []
-            for item in picked:
-                if item["kind"] == "image":
-                    images.append({"b64": item["b64"], "mime": item["mime"],
-                                   "name": item.get("name") or "图片"})
-                    continue
-                try:
-                    kind, data = aiclient.read_attachment(item["path"])
-                except Exception as e:
-                    status.config(text=str(e), fg="#E57373")
-                    return
-                if kind == "image":
-                    images.append(data)
-                else:
-                    texts.append(f"【附件 {Path(item['path']).name}】\n{data}")
-            if texts:
-                report = (report + "\n\n" + "\n\n".join(texts)).strip()
-
-            btn.config(state="disabled", text="批改中…")
-            status.config(text=f"已发出（{len(images)} 张图）等模型回…", fg=DOING)
-            def worker():
-                try:
-                    text = aiclient.review(self.cfg, full, crit, report,
-                                           attachments=images or None,
-                                           sessions=self._recent_sessions(self.selected))
-                    self.root.after(0, lambda t=text: done(t))
-                except Exception as e:
-                    self.root.after(0, lambda m=str(e): done(None, m))
-
-            threading.Thread(target=worker, daemon=True).start()
-
-        btn = tk.Button(row, text="提交批改", command=submit, bg=CARD, fg=ACCENT, bd=1,
-                        relief="flat", highlightbackground=LINE, activebackground=ACCENT,
-                        activeforeground="#111", font=(FONT, 9, "bold"), cursor="hand2", width=10)
-        btn.pack(side="left")
-        tk.Button(row, text="返回", command=self._close_panel, bg=CARD, fg=MUTED, bd=1,
-                  relief="flat", highlightbackground=LINE, activebackground=LINE,
-                  activeforeground=FG, font=(FONT, 9), cursor="hand2",
-                  width=8).pack(side="right")
-
-    # ---------- API 设置 ----------
-    def _open_settings(self):
-        self._show_panel(560, 470, self._build_settings_panel)
-
-    def _build_settings_panel(self, parent):
-        fields = {}
-
-        tk.Label(parent, text="API 设置", bg=BG, fg=ACCENT,
-                 font=(FONT, 10, "bold")).pack(anchor="w", padx=16, pady=(12, 2))
-        tk.Label(parent, text="填一次就存在本地 config.json，不会上传到任何地方",
-                 bg=BG, fg=MUTED, font=(FONT, 8)).pack(anchor="w", padx=16, pady=(0, 8))
-
-        form = tk.Frame(parent, bg=BG)
-        form.pack(fill="x", padx=16)
-        form.columnconfigure(1, weight=1)
-
-        def add_row(r, label, key, show=None):
-            tk.Label(form, text=label, bg=BG, fg=DIM, font=(FONT, 9),
-                     anchor="w", width=10).grid(row=r, column=0, sticky="w", pady=5)
-            e = tk.Entry(form, bg=CARD, fg=FG, insertbackground=FG, bd=0, font=(FONT, 9),
-                         highlightthickness=1, highlightbackground=LINE, highlightcolor=ACCENT)
-            if show:
-                e.config(show=show)
-            e.grid(row=r, column=1, sticky="ew", padx=(4, 4), ipady=4)
-            fields[key] = e
-            return e
-
-        pvar = tk.StringVar(value=self.cfg.get("provider") or "deepseek")
-        tk.Label(form, text="服务商", bg=BG, fg=DIM, font=(FONT, 9), anchor="w",
-                 width=10).grid(row=0, column=0, sticky="w", pady=5)
-        style = ttk.Style()
-        try:
-            style.theme_use("clam")          # 只有 clam 主题能改下拉框底色
-            style.configure("Dark.TCombobox", fieldbackground=CARD, background=CARD,
-                            foreground=FG, arrowcolor=FG, bordercolor=LINE,
-                            selectbackground=CARD, selectforeground=FG)
-            style.map("Dark.TCombobox",
-                      fieldbackground=[("readonly", CARD)],
-                      foreground=[("readonly", FG)],
-                      background=[("readonly", CARD)])
-        except Exception:
-            pass
-        combo = ttk.Combobox(form, textvariable=pvar, style="Dark.TCombobox", state="readonly",
-                             values=[f"{k} · {v['name']}" for k, v in aiclient.PROVIDERS.items()],
-                             font=(FONT, 9))
-        combo.grid(row=0, column=1, sticky="ew", padx=(4, 4), pady=5)
-
-        add_row(1, "base_url", "base_url")
-        add_row(2, "model", "model")
-        key_entry = add_row(3, "api_key", "api_key", show="*")
-        add_row(4, "proxy", "proxy")
-
-        for k in ("base_url", "model", "api_key", "proxy"):
-            fields[k].insert(0, str(self.cfg.get(k) or ""))
-
-        tip = tk.Label(parent, text="", bg=BG, fg=MUTED, font=(FONT, 8),
-                       anchor="w", justify="left", wraplength=520)
-        tip.pack(fill="x", padx=16, pady=(10, 0))
-
-        def provider_key():
-            return pvar.get().split(" · ")[0]
-
-        def sync_tip(*_):
-            p = aiclient.PROVIDERS.get(provider_key(), {})
-            tip.config(text=f"申请地址：{p.get('apply') or '自填'}    费用：{p.get('cost') or '—'}")
-
-        def on_provider(*_):
-            p = aiclient.PROVIDERS.get(provider_key(), {})
-            for k in ("base_url", "model"):
-                if p.get(k):
-                    fields[k].delete(0, "end")
-                    fields[k].insert(0, p[k])
-            sync_tip()
-
-        combo.bind("<<ComboboxSelected>>", on_provider)
-        sync_tip()
-
-        status = tk.Label(parent, text="", bg=BG, fg=MUTED, font=(FONT, 8),
-                          anchor="w", justify="left", wraplength=520)
-        status.pack(fill="x", padx=16, pady=(8, 0))
-
-        def collect():
-            return {"provider": provider_key(), "base_url": fields["base_url"].get().strip(),
-                    "model": fields["model"].get().strip(), "api_key": fields["api_key"].get().strip(),
-                    "proxy": fields["proxy"].get().strip()}
-
-        def save():
-            cfg = dict(self.cfg)
-            cfg.update(collect())
-            try:
-                path = aiclient.save_config(APP_DIR, cfg)
-            except Exception as e:
-                status.config(text=f"保存失败：{e}", fg="#E57373")
-                return
-            self.cfg = cfg
-            status.config(text=f"已保存 → {path}", fg=OK)
-
-        def test():
-            cfg = dict(self.cfg)
-            cfg.update(collect())
-            status.config(text="测试中…", fg=DOING)
-
-            def worker():
-                try:
-                    msg = aiclient.test_connection(cfg)
-                    self.root.after(0, lambda: status.config(text=msg, fg=OK))
-                except Exception as e:
-                    self.root.after(0, lambda m=str(e): status.config(text=m, fg="#E57373"))
-            threading.Thread(target=worker, daemon=True).start()
-
-        def toggle_key():
-            key_entry.config(show="" if key_entry.cget("show") else "*")
-
-        row = tk.Frame(parent, bg=BG)
-        row.pack(fill="x", padx=16, pady=(12, 10))
-        for text, cmd, color in (("保存", save, OK), ("测试连接", test, ACCENT)):
-            tk.Button(row, text=text, command=cmd, bg=CARD, fg=color, bd=1, relief="flat",
-                      highlightbackground=LINE, activebackground=color, activeforeground="#111",
-                      font=(FONT, 9, "bold"), cursor="hand2", width=9).pack(side="left", padx=(0, 6))
-        tk.Button(row, text="显示 Key", command=toggle_key, bg=CARD, fg=MUTED, bd=1,
-                  relief="flat", highlightbackground=LINE, activebackground=LINE,
-                  activeforeground=FG, font=(FONT, 9), cursor="hand2",
-                  width=9).pack(side="left")
-        tk.Button(row, text="返回", command=self._close_panel, bg=CARD, fg=MUTED, bd=1,
-                  relief="flat", highlightbackground=LINE, activebackground=LINE,
-                  activeforeground=FG, font=(FONT, 9), cursor="hand2",
-                  width=8).pack(side="right")
 
     # ---------- 渲染 ----------
     def _draw_bar(self):

@@ -1,6 +1,6 @@
 # DaFeiYu · 大肥鱼监工器
 
-**当前版本 v0.9.1** · [变更记录](CHANGELOG.md) · [使用指引](docs/USAGE.md) · [MIT](LICENSE) · Python 3.8+
+**当前版本 v1.0.0** · [变更记录](CHANGELOG.md) · [使用指引](docs/USAGE.md) · [MIT](LICENSE) · Python 3.8+
 
 一个只管三件事的桌面悬浮窗：**你还剩几项没做、下一项是什么、怎么才算过关。**
 
@@ -81,26 +81,6 @@
 Windows 上剪贴板给的是 `CF_DIB` 原始位图而不是 PNG，所以程序自己做了 DIB → PPM → PNG 的转换，纯标准库，不引入 Pillow。macOS / Linux 只能走文件选择。
 
 需要一个能读图的模型：`qwen-vl-max`、`glm-4v-flash`（免费）、`gpt-4o-mini` 都行。程序会先判断当前模型是否支持视觉，不支持就明确告诉你换哪个，而不是发出去白等一次超时。
-
-## AI 批改（可选功能）
-
-不配 API Key 也能用全部核心功能 —— 记账、打卡、工时、打回一样不落。想要第二双眼睛判你的作业，才需要这一步。
-
-配好后，点 `AI 批改` 把推导贴进去，模型按**这项的验收标准**回四行：判定 / 漏洞 / 依据 / 建议。判定规则里写死了三条：没过程没数字一律打回、只给结论不给推导打回、态度再好也不给通过。
-
-**AI 判通过也不会自动过关。** 进度始终只由你点「✔ 过关」决定 —— 批改是第二双眼睛，不是替你负责的人。
-
-三分钟接入，[完整引导见 docs/API_SETUP.md](docs/API_SETUP.md)：五家服务商对比（DeepSeek 一次批改约 ¥0.001）、拿 Key 的步骤、报错对照表、隐私边界。
-
-![API 设置面板](docs/settings.png)
-
-```json
-// config.json（首次启动自动生成，已 gitignore）
-{ "base_url": "https://api.deepseek.com/v1", "model": "deepseek-chat",
-  "api_key": "sk-...", "proxy": "", "system_prompt": "" }
-```
-
-`system_prompt` 留空用内置监工人格，写自己的就换语气。**任何 OpenAI 兼容接口都能接**。
 
 ## 安装与快速开始
 
@@ -200,19 +180,14 @@ python dafeiyu.py
 
 ```
 dafeiyu.py                   主程序（界面 + 记账），单文件
-aiclient.py                  AI 批改客户端（OpenAI 兼容，零依赖）
-clipimg.py                   Windows 剪贴板取图（DIB → PNG，零依赖）
 build.ps1                    一键打包 exe
 tasks.json                   你的任务池（首次运行自动生成，不进版本库）
 tasks.template.json          任务池骨架
 tasks.example.json           三科完整示例
-config.json                  你的 API 配置（自动生成，不进版本库）
-config.example.json          API 配置示例
 dafeiyu_state.json           你的进度账本（不进版本库）
 plan/                        学习排期表：工时估算、周计划、里程碑
 exams/                       配套试卷与判分细则（示例）
 docs/
-  API_SETUP.md               API 接入引导（五家服务商、报错对照、隐私）
   preview.png                截图
 prompts/
   supervisor-template.md     通用监督人格模板
@@ -261,7 +236,7 @@ python dafeiyu.py --smoke    # 自检：0.8 秒后自动退出（CI / 验证用�
 
 ## 版本与变更
 
-**当前版本 `0.9.1`。** 每次改动按语义化版本记录在 [CHANGELOG.md](CHANGELOG.md)，分「新增 / 修复 / 已知问题」三段——**已知问题也是记录的一部分**，藏起来的问题下次还会咬人。
+**当前版本 `1.0.0`。** 每次改动按语义化版本记录在 [CHANGELOG.md](CHANGELOG.md)，分「新增 / 修复 / 已知问题」三段——**已知问题也是记录的一部分**，藏起来的问题下次还会咬人。
 
 查版本号：
 

@@ -47,7 +47,7 @@ root = tk.Tk()
 app = dafeiyu.DaFeiYu(root)
 app._refresh()
 app._select("g2")
-print("进度:", app.pct.cget("text"), "|", app.left_label.cget("text"), "|", app.sub_label.cget("text"))
+print("进度:", app.pct.cget("text"), "|", app.left_label.cget("text"), "|", app.today_label.cget("text"))
 print("列表行数:", len(app.rows), "| 详情标题:", app.detail_title.cget("text"))
 print("详情内容:", app.detail_text.get("1.0", "end").strip().replace("\n", " / "))
 
@@ -62,7 +62,7 @@ root.destroy()
 TASKS.write_text("{ 这不是 json", encoding="utf-8")
 dafeiyu.load_config()
 print("损坏配置 -> 回退任务数:", dafeiyu.TOTAL, "| 标题:", dafeiyu.APP_TITLE)
-assert dafeiyu.TOTAL == 10
+assert dafeiyu.TOTAL == 12
 
 for f in (STATE, TASKS):
     f.unlink(missing_ok=True)
