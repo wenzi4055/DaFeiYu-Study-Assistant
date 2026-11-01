@@ -12,11 +12,15 @@ AI 批改是**可选功能**。不配 API Key，程序照常记账、打卡、�
 
 | 服务商 | 申请地址 | 默认模型 | 一次批改大概 |
 |---|---|---|---|
-| **DeepSeek**（推荐） | https://platform.deepseek.com/api_keys | `deepseek-chat` | ≈ ¥0.001 |
-| 通义千问 | https://bailian.console.aliyun.com/?apiKey=1 | `qwen-plus` | 新用户有免费额度 |
-| 智谱 GLM | https://open.bigmodel.cn/usercenter/apikeys | `glm-4-flash` | `glm-4-flash` 免费 |
+| **DeepSeek**（推荐，纯文字） | https://platform.deepseek.com/api_keys | `deepseek-chat` | ≈ ¥0.001 |
+| 通义千问（**能读图**） | https://bailian.console.aliyun.com/?apiKey=1 | `qwen-vl-max` | 新用户有免费额度 |
+| 智谱 GLM（**能读图**） | https://open.bigmodel.cn/usercenter/apikeys | `glm-4v-flash` | 免费 |
 | Kimi / Moonshot | https://platform.moonshot.cn/console/api-keys | `moonshot-v1-8k` | ≈ ¥0.01 |
-| OpenAI | https://platform.openai.com/api-keys | `gpt-4o-mini` | ≈ ¥0.01，需外币卡 + 代理 |
+| OpenAI（**能读图**） | https://platform.openai.com/api-keys | `gpt-4o-mini` | ≈ ¥0.01，需外币卡 + 代理 |
+
+**要传手写推导照片，必须选能读图的模型。** `deepseek-chat` 只认文字 —— 想拍照交作业，就把 `model` 换成 `qwen-vl-max` 或 `glm-4v-flash`（后者免费）。程序会自己判断，不支持时直接提示你换哪个。
+
+当前识别规则：模型名里含 `vl` / `vision` / `4o` / `glm-4v` / `gemini` / `omni` 视为支持视觉。
 
 **一次批改 ≈ 1500 token**（验收标准 + 你的汇报进，判定结果出）。一天批 3 次，一个月不到 3 毛钱。这个功能不会让你破费，但**它也不是必须的**。
 
